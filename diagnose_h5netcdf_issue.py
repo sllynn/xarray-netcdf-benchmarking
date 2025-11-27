@@ -6,7 +6,6 @@ This script helps diagnose HDF5 dimension scale issues when reading
 NetCDF files with h5netcdf that were created with netcdf4.
 """
 
-import sys
 from pathlib import Path
 import argparse
 
