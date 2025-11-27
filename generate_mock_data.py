@@ -43,18 +43,28 @@ def generate_mock_file(template_path, output_path, num_ensemble_members=50, engi
         220, 320, size=(num_ensemble_members, n_valid_time, n_latitude, n_longitude)
     ).astype(np.float32)
 
-    # Prepare coordinates dictionary
+    # CRITICAL: Copy coordinates WITHOUT their coordinate associations
+    # Use .values and .attrs separately, not the whole DataArray
     coords = {
         "number": (["number"], new_number, template_ds["number"].attrs.copy()),
-        "valid_time": template_ds["valid_time"],
-        "latitude": template_ds["latitude"],
-        "longitude": template_ds["longitude"],
+        "valid_time": (
+            ["valid_time"],
+            template_ds["valid_time"].values,
+            template_ds["valid_time"].attrs.copy()
+        ),
+        "latitude": (
+            ["latitude"],
+            template_ds["latitude"].values,
+            template_ds["latitude"].attrs.copy()
+        ),
+        "longitude": (
+            ["longitude"],
+            template_ds["longitude"].values,
+            template_ds["longitude"].attrs.copy()
+        ),
     }
-
         # Copy t2m attributes but fix the coordinates attribute
     t2m_attrs = template_ds["t2m"].attrs.copy()
-    
-    # Remove the coordinates attribute - xarray will infer from dataset structure
     if "coordinates" in t2m_attrs:
         del t2m_attrs["coordinates"]
 
