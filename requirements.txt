@@ -1,8 +1,8 @@
-xarray>=2023.0.0
-netCDF4>=1.6.0
-h5py>=3.8.0
-h5netcdf>=1.1.0
-numpy>=1.24.0
-dask[complete]>=2023.0.0
-pandas>=2.0.0
+xarray==2024.3.0
+netCDF4==1.7.3
+h5py==3.15.1
+h5netcdf==1.7.3
+numpy==2.3.5
+dask[complete]==2025.11.0
+pandas==2.3.3
 
