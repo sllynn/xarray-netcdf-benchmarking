@@ -50,11 +50,23 @@ def check_library_versions():
     # Check for HDF5 version mismatch
     if 'h5py_hdf5' in versions and 'netcdf4_hdf5' in versions:
         if versions['h5py_hdf5'] != versions['netcdf4_hdf5']:
+            import os
+            is_databricks = 'DATABRICKS_RUNTIME_VERSION' in os.environ
+            
             print()
-            print("⚠️  WARNING: HDF5 version mismatch detected!")
-            print(f"   h5py uses:     HDF5 {versions['h5py_hdf5']}")
-            print(f"   netCDF4 uses:  HDF5 {versions['netcdf4_hdf5']}")
-            print("   This can cause compatibility issues on Databricks.")
+            if is_databricks:
+                print("⚠️  WARNING: HDF5 version mismatch detected!")
+                print(f"   h5py uses:     HDF5 {versions['h5py_hdf5']}")
+                print(f"   netCDF4 uses:  HDF5 {versions['netcdf4_hdf5']}")
+                print("   ⚠️  This CAN cause problems on Databricks!")
+                print("   → Each package trying to use shared system HDF5")
+            else:
+                print("ℹ️  Note: HDF5 version difference detected")
+                print(f"   h5py uses:     HDF5 {versions['h5py_hdf5']}")
+                print(f"   netCDF4 uses:  HDF5 {versions['netcdf4_hdf5']}")
+                print("   ✅ This is NORMAL on local machines (packages use bundled HDF5)")
+                print("   ✅ Each package has its own isolated HDF5 library")
+                print("   ⚠️  Only a concern on Databricks with shared system HDF5")
     
     print()
 

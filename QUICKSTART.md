@@ -3,12 +3,19 @@
 ## Setup
 
 ```bash
-# Activate virtual environment
+# Create and activate virtual environment
+uv venv .venv
 source .venv/bin/activate
+
+# Install dependencies (matches Databricks ML Runtime)
+uv pip compile requirements.txt -o requirements.lock
+uv pip install -r requirements.lock
 
 # Verify installation
 python -c "import xarray, dask; print('✓ Environment ready!')"
 ```
+
+**Note:** All versions match Databricks ML Runtime for consistency.
 
 ## Available Scripts
 

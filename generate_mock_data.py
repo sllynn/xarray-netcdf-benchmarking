@@ -67,7 +67,15 @@ def generate_mock_file(template_path, output_path, num_ensemble_members=50, engi
         new_ds["t2m"].attrs["GRIB_totalNumber"] = num_ensemble_members
     
     # Save to NetCDF file
-    new_ds.to_netcdf(output_path, engine=engine)
+    # For h5netcdf on Databricks, use invalid_netcdf=True to avoid dimension scale issues
+    if engine == "h5netcdf":
+        new_ds.to_netcdf(
+            output_path, 
+            engine=engine,
+            invalid_netcdf=True  # Skip dimension scales to avoid H5DSset_scale errors
+        )
+    else:
+        new_ds.to_netcdf(output_path, engine=engine)
 
     # Close datasets
     template_ds.close()

@@ -109,32 +109,40 @@ python benchmark_loading.py "data/*.nc" --output-dir results/
 
 This project uses a virtual environment with `uv` for fast, reproducible package management.
 
-### Quick Start
+**All requirements match Databricks ML Runtime for consistency.**
 
 ```bash
-# Activate the existing virtual environment
-source .venv/bin/activate
-
-# Or create a new one
+# Create virtual environment
 uv venv .venv
 source .venv/bin/activate
 
-# Install dependencies from locked requirements
+# Compile and install locked requirements
+uv pip compile requirements.txt -o requirements.lock
 uv pip install -r requirements.lock
 ```
+
+**Key versions** (matching Databricks ML Runtime):
+- h5py 3.12.1 (matches DBR ML pre-installed version)
+- h5netcdf 1.3.0 (compatible with h5py 3.12.1)
+- xarray 2024.3.0
+- netCDF4 1.7.3
+
+This ensures **identical behavior** between local development and Databricks.
 
 ### Requirements
 
 Core dependencies (see `requirements.txt`):
-- xarray >= 2023.0.0
-- netCDF4 >= 1.6.0
-- h5py >= 3.8.0
-- h5netcdf >= 1.1.0
-- numpy >= 1.24.0
-- dask[complete] >= 2023.0.0
-- pandas >= 2.0.0
+- xarray 2024.3.0
+- netCDF4 1.7.3
+- h5py 3.12.1 (matches Databricks ML Runtime)
+- h5netcdf 1.3.0 (compatible with h5py 3.12.1)
+- numpy 2.3.5
+- dask[complete] 2025.11.0
+- pandas 2.3.3
 
 Exact versions are locked in `requirements.lock` for reproducibility.
+
+**Note:** These versions match Databricks ML Runtime to ensure consistent behavior.
 
 ## NetCDF File Structure
 
@@ -206,21 +214,6 @@ This mock dataset is suitable for:
 - Development without requiring large real datasets from Copernicus
 
 ## Troubleshooting
-
-### NetCDF/HDF5 Issues on Databricks
-
-If you encounter errors on Databricks:
-
-**Error: `[Errno -101] NetCDF: HDF error`** (netCDF4 engine fails)
-- **Quick Fix**: See [DATABRICKS_QUICK_FIX.md](DATABRICKS_QUICK_FIX.md) - Copy & paste solution
-- **Root cause**: HDF5 library version conflicts, DBFS FUSE mount issues
-- **Solution**: Reinstall libraries, copy files to `/tmp/`, use h5netcdf as fallback
-
-**Error: `H5DSget_num_scales`** (h5netcdf engine fails)
-- **Quick fix**: The `benchmark_loading.py` script automatically handles this with `backend_kwargs={'phony_dims': 'sort'}` for h5netcdf
-- **Root cause**: Dimension scale incompatibility between netCDF4 and h5py
-
-**Full documentation**: [DATABRICKS_TROUBLESHOOTING.md](DATABRICKS_TROUBLESHOOTING.md)
 
 ### Diagnostic Script
 
