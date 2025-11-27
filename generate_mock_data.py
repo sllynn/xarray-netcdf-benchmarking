@@ -11,7 +11,7 @@ import uuid
 import argparse
 
 
-def generate_mock_file(template_path, output_path, num_ensemble_members=50, engine="netcdf4"):
+def generate_mock_file(template_path, output_path, num_ensemble_members=50, time_offset_hours=0, engine="netcdf4"):
     """
     Generate a mock NetCDF file based on a template.
     
@@ -23,6 +23,8 @@ def generate_mock_file(template_path, output_path, num_ensemble_members=50, engi
         Path where the mock file will be saved
     num_ensemble_members : int
         Number of ensemble members (default: 50)
+    time_offset_hours : int
+        Number of hours to offset the valid_time from the template (default: 0)
     engine : str
         Engine to use for writing ('netcdf4' or 'h5netcdf', default: 'netcdf4')
     """
@@ -43,13 +45,22 @@ def generate_mock_file(template_path, output_path, num_ensemble_members=50, engi
         220, 320, size=(num_ensemble_members, n_valid_time, n_latitude, n_longitude)
     ).astype(np.float32)
 
+    # Create modified valid_time with offset
+    # Add time_offset_hours to the template's time value
+    template_time_values = template_ds["valid_time"].values
+    if time_offset_hours != 0:
+        # Add the offset in hours (time values are typically numpy.datetime64 or similar)
+        new_time_values = template_time_values + np.timedelta64(time_offset_hours, 'h')
+    else:
+        new_time_values = template_time_values
+
     # CRITICAL: Copy coordinates WITHOUT their coordinate associations
     # Use .values and .attrs separately, not the whole DataArray
     coords = {
         "number": (["number"], new_number, template_ds["number"].attrs.copy()),
         "valid_time": (
             ["valid_time"],
-            template_ds["valid_time"].values,
+            new_time_values,  # Use the offset time values
             template_ds["valid_time"].attrs.copy()
         ),
         "latitude": (
@@ -105,6 +116,8 @@ def main():
 Examples:
   %(prog)s template.nc output_dir/
   %(prog)s data/example/652f73a7818c431a469c7ed3e9054e0a.nc data/ --num-files 50 --num-members 25
+  %(prog)s template.nc data/ --num-files 100 --time-step-hours 6   # Files 6 hours apart (typical)
+  %(prog)s template.nc data/ --num-files 365 --time-step-hours 24  # Daily for 1 year
         """,
     )
     parser.add_argument(
@@ -132,6 +145,12 @@ Examples:
         choices=["netcdf4", "h5netcdf"],
         help="Engine to use for writing files (default: netcdf4). Note: h5netcdf may not work on Databricks.",
     )
+    parser.add_argument(
+        "--time-step-hours",
+        type=int,
+        default=6,
+        help="Number of hours between each file's valid_time (default: 6, typical for weather forecasts)",
+    )
     
     args = parser.parse_args()
 
@@ -152,6 +171,7 @@ Examples:
     print(f"Template: {template_file}")
     print(f"Output directory: {output_dir}")
     print(f"Engine: {args.engine}")
+    print(f"Time step: {args.time_step_hours} hour(s) between files")
     print()
 
     # Generate mock files
@@ -160,9 +180,16 @@ Examples:
         filename = f"{uuid.uuid4().hex}.nc"
         output_path = output_dir / filename
 
+        # Calculate time offset for this file (each file is time_step_hours apart)
+        time_offset = i * args.time_step_hours
+
         # Generate the mock file
         generate_mock_file(
-            template_file, output_path, num_ensemble_members=args.num_members, engine=args.engine
+            template_file, 
+            output_path, 
+            num_ensemble_members=args.num_members, 
+            time_offset_hours=time_offset,
+            engine=args.engine
         )
 
         # Progress update
@@ -171,9 +198,11 @@ Examples:
 
     print()
     print(f"✓ Successfully generated {args.num_files} mock files in {output_dir}")
-    print(
-        f"  Each file contains {args.num_members} ensemble members with random temperature data."
-    )
+    print(f"  Each file contains {args.num_members} ensemble members with random temperature data.")
+    total_hours = (args.num_files - 1) * args.time_step_hours
+    if total_hours > 0:
+        total_days = total_hours / 24
+        print(f"  Time range: {total_hours} hours ({total_days:.1f} days, {args.num_files} time steps, {args.time_step_hours}h apart)")
 
 
 if __name__ == "__main__":
