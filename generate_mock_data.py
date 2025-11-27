@@ -51,10 +51,6 @@ def generate_mock_file(template_path, output_path, num_ensemble_members=50, engi
         "longitude": template_ds["longitude"],
     }
 
-    # Add expver as a coordinate (not a data variable!)
-    if "expver" in template_ds:
-        coords["expver"] = template_ds["expver"]
-
         # Copy t2m attributes but fix the coordinates attribute
     t2m_attrs = template_ds["t2m"].attrs.copy()
     
