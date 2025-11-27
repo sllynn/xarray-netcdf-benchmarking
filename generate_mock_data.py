@@ -8,6 +8,7 @@ import xarray as xr
 import numpy as np
 from pathlib import Path
 import uuid
+import argparse
 
 def generate_mock_file(template_path, output_path, num_ensemble_members=50):
     """
@@ -78,34 +79,73 @@ def generate_mock_file(template_path, output_path, num_ensemble_members=50):
 
 def main():
     """Main function to generate 100 mock files."""
-    # Paths
-    template_file = Path('/Users/stuart.lynn/Customers/LSEG/raster-benchmarking/data/example/652f73a7818c431a469c7ed3e9054e0a.nc')
-    output_dir = Path('/Users/stuart.lynn/Customers/LSEG/raster-benchmarking/data')
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description='Generate mock NetCDF files based on a template from Copernicus Climate Data Store.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  %(prog)s template.nc output_dir/
+  %(prog)s data/example/652f73a7818c431a469c7ed3e9054e0a.nc data/ --num-files 50 --num-members 25
+        '''
+    )
+    parser.add_argument(
+        'template_file',
+        type=str,
+        help='Path to the template NetCDF file'
+    )
+    parser.add_argument(
+        'output_dir',
+        type=str,
+        help='Directory where mock files will be saved'
+    )
+    parser.add_argument(
+        '--num-files',
+        type=int,
+        default=100,
+        help='Number of mock files to generate (default: 100)'
+    )
+    parser.add_argument(
+        '--num-members',
+        type=int,
+        default=50,
+        help='Number of ensemble members per file (default: 50)'
+    )
+    
+    args = parser.parse_args()
+    
+    # Convert to Path objects
+    template_file = Path(args.template_file)
+    output_dir = Path(args.output_dir)
+    
+    # Validate template file exists
+    if not template_file.exists():
+        parser.error(f"Template file not found: {template_file}")
     
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    print(f"Generating 100 mock NetCDF files with 50 ensemble members each...")
+    print(f"Generating {args.num_files} mock NetCDF files with {args.num_members} ensemble members each...")
     print(f"Template: {template_file}")
     print(f"Output directory: {output_dir}")
     print()
     
-    # Generate 100 mock files
-    for i in range(100):
+    # Generate mock files
+    for i in range(args.num_files):
         # Generate unique filename using UUID (similar to the template)
         filename = f"{uuid.uuid4().hex}.nc"
         output_path = output_dir / filename
         
         # Generate the mock file
-        generate_mock_file(template_file, output_path, num_ensemble_members=50)
+        generate_mock_file(template_file, output_path, num_ensemble_members=args.num_members)
         
         # Progress update
         if (i + 1) % 10 == 0:
-            print(f"Generated {i + 1}/100 files...")
+            print(f"Generated {i + 1}/{args.num_files} files...")
     
     print()
-    print(f"✓ Successfully generated 100 mock files in {output_dir}")
-    print(f"  Each file contains 50 ensemble members with random temperature data.")
+    print(f"✓ Successfully generated {args.num_files} mock files in {output_dir}")
+    print(f"  Each file contains {args.num_members} ensemble members with random temperature data.")
 
 
 if __name__ == '__main__':

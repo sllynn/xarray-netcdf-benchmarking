@@ -13,13 +13,17 @@ python -c "import xarray, dask; print('✓ Environment ready!')"
 ## Available Scripts
 
 ### 1. Generate Mock Data
-Creates 100 NetCDF files with 50 ensemble members each.
+Creates mock NetCDF files with specified ensemble members.
 
 ```bash
-python generate_mock_data.py
+# Generate 100 files with 50 ensemble members (default)
+python generate_mock_data.py data/example/652f73a7818c431a469c7ed3e9054e0a.nc data/
+
+# Generate custom number of files and members
+python generate_mock_data.py data/example/652f73a7818c431a469c7ed3e9054e0a.nc data/ --num-files 50 --num-members 25
 ```
 
-**Output**: 100 files (~5GB total) in `data/` directory
+**Output**: NetCDF files in specified output directory
 
 ---
 
@@ -38,7 +42,11 @@ python verify_mock_data.py
 Tests different loading strategies and generates performance report.
 
 ```bash
-python benchmark_loading.py
+# Run benchmarks on all files in data directory
+python benchmark_loading.py "data/*.nc"
+
+# Save results to a specific directory
+python benchmark_loading.py "data/*.nc" --output-dir results/
 ```
 
 **Output**: 

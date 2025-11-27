@@ -32,18 +32,30 @@ data/
 
 ### `generate_mock_data.py`
 
-Generates 100 mock NetCDF files based on the template file.
+Generates mock NetCDF files based on a template file.
 
 **Usage:**
 ```bash
-python3 generate_mock_data.py
+python3 generate_mock_data.py <template_file> <output_dir> [options]
+
+# Example: Generate 100 files with 50 ensemble members (default)
+python3 generate_mock_data.py data/example/652f73a7818c431a469c7ed3e9054e0a.nc data/
+
+# Example: Generate 50 files with 25 ensemble members
+python3 generate_mock_data.py data/example/652f73a7818c431a469c7ed3e9054e0a.nc data/ --num-files 50 --num-members 25
 ```
+
+**Arguments:**
+- `template_file` - Path to the template NetCDF file (required)
+- `output_dir` - Directory where mock files will be saved (required)
+- `--num-files` - Number of mock files to generate (default: 100)
+- `--num-members` - Number of ensemble members per file (default: 50)
 
 **Features:**
 - Preserves all metadata and attributes from the original file
 - Generates random temperature data (220-320K range)
 - Creates files with unique UUID filenames
-- Updates ensemble dimension from 10 to 50 members
+- Flexible ensemble size and file count
 
 ### `verify_mock_data.py`
 
@@ -67,8 +79,17 @@ Benchmarks different xarray loading strategies across multiple configurations.
 **Usage:**
 ```bash
 source .venv/bin/activate
-python benchmark_loading.py
+
+# Basic usage with default output directory
+python benchmark_loading.py "data/*.nc"
+
+# Specify output directory for results
+python benchmark_loading.py "data/*.nc" --output-dir results/
 ```
+
+**Arguments:**
+- `file_pattern` - Glob pattern for NetCDF files to benchmark (required)
+- `-o, --output-dir` - Directory where results will be saved (default: current directory)
 
 **Tests:**
 - Engine comparison: netcdf4 vs h5netcdf

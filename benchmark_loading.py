@@ -14,6 +14,8 @@ from pathlib import Path
 import pandas as pd
 import json
 from datetime import datetime
+import argparse
+from glob import glob
 
 
 def benchmark_loading(
@@ -130,20 +132,30 @@ def benchmark_loading(
         }
 
 
-def run_benchmarks():
-    """Run comprehensive benchmarks."""
-    data_dir = Path('/Users/stuart.lynn/Customers/LSEG/raster-benchmarking/data')
-    file_pattern = str(data_dir / '*.nc')
+def run_benchmarks(file_pattern, output_dir='.'):
+    """Run comprehensive benchmarks.
     
+    Parameters:
+    -----------
+    file_pattern : str
+        Glob pattern for files to benchmark (e.g., 'data/*.nc')
+    output_dir : str
+        Directory where results will be saved
+    """
     print("\n" + "="*70)
     print("XARRAY LOADING BENCHMARK")
     print("="*70)
-    print(f"Data directory: {data_dir}")
     print(f"File pattern: {file_pattern}")
     
     # Count files
-    nc_files = list(data_dir.glob('*.nc'))
+    nc_files = glob(file_pattern)
     print(f"Number of files: {len(nc_files)}")
+    
+    if len(nc_files) == 0:
+        print(f"\n⚠️  Warning: No files found matching pattern: {file_pattern}")
+        print("Please check the file pattern and try again.")
+        return []
+    
     print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     results = []
@@ -249,20 +261,36 @@ def run_benchmarks():
     return results
 
 
-def save_and_display_results(results):
-    """Save results and display summary."""
+def save_and_display_results(results, output_dir='.'):
+    """Save results and display summary.
+    
+    Parameters:
+    -----------
+    results : list
+        List of benchmark results
+    output_dir : str
+        Directory where results will be saved
+    """
+    if not results:
+        print("\n⚠️  No results to save.")
+        return
+    
     # Convert to DataFrame
     df = pd.DataFrame(results)
     
+    # Ensure output directory exists
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
     # Save to CSV
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    csv_file = f'benchmark_results_{timestamp}.csv'
+    csv_file = output_path / f'benchmark_results_{timestamp}.csv'
     df.to_csv(csv_file, index=False)
     print(f"\n\n{'='*70}")
     print(f"Results saved to: {csv_file}")
     
     # Save detailed results to JSON
-    json_file = f'benchmark_results_{timestamp}.json'
+    json_file = output_path / f'benchmark_results_{timestamp}.json'
     with open(json_file, 'w') as f:
         json.dump(results, f, indent=2)
     print(f"Detailed results saved to: {json_file}")
@@ -338,8 +366,36 @@ def save_and_display_results(results):
 
 def main():
     """Main function."""
-    results = run_benchmarks()
-    save_and_display_results(results)
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description='Benchmark different methods of loading NetCDF files with xarray.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  %(prog)s "data/*.nc"
+  %(prog)s "data/*.nc" --output-dir results/
+  %(prog)s "/path/to/files/*.nc" -o benchmarks/
+        '''
+    )
+    parser.add_argument(
+        'file_pattern',
+        type=str,
+        help='Glob pattern for NetCDF files to benchmark (e.g., "data/*.nc")'
+    )
+    parser.add_argument(
+        '-o', '--output-dir',
+        type=str,
+        default='.',
+        help='Directory where benchmark results will be saved (default: current directory)'
+    )
+    
+    args = parser.parse_args()
+    
+    # Run benchmarks
+    results = run_benchmarks(args.file_pattern, args.output_dir)
+    
+    # Save and display results
+    save_and_display_results(results, args.output_dir)
 
 
 if __name__ == '__main__':

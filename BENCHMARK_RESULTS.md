@@ -136,7 +136,7 @@ Each test:
 All tests are reproducible using:
 ```bash
 source .venv/bin/activate
-python benchmark_loading.py
+python benchmark_loading.py "data/*.nc"
 ```
 
 Dependencies are locked in `requirements.lock` for exact reproducibility.
