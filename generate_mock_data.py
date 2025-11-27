@@ -11,10 +11,10 @@ import uuid
 import argparse
 
 
-def generate_mock_file(template_path, output_path, num_ensemble_members=50):
+def generate_mock_file(template_path, output_path, num_ensemble_members=50, engine="netcdf4"):
     """
     Generate a mock NetCDF file based on a template.
-
+    
     Parameters:
     -----------
     template_path : str or Path
@@ -23,6 +23,8 @@ def generate_mock_file(template_path, output_path, num_ensemble_members=50):
         Path where the mock file will be saved
     num_ensemble_members : int
         Number of ensemble members (default: 50)
+    engine : str
+        Engine to use for writing ('netcdf4' or 'h5netcdf', default: 'netcdf4')
     """
     # Open the template file
     template_ds = xr.open_dataset(template_path)
@@ -63,9 +65,9 @@ def generate_mock_file(template_path, output_path, num_ensemble_members=50):
     # Update the GRIB_totalNumber attribute to reflect new ensemble size
     if "GRIB_totalNumber" in new_ds["t2m"].attrs:
         new_ds["t2m"].attrs["GRIB_totalNumber"] = num_ensemble_members
-
+    
     # Save to NetCDF file
-    new_ds.to_netcdf(output_path, engine="netcdf4")
+    new_ds.to_netcdf(output_path, engine=engine)
 
     # Close datasets
     template_ds.close()
@@ -104,7 +106,14 @@ Examples:
         default=50,
         help="Number of ensemble members per file (default: 50)",
     )
-
+    parser.add_argument(
+        "--engine",
+        type=str,
+        default="netcdf4",
+        choices=["netcdf4", "h5netcdf"],
+        help="Engine to use for writing files (default: netcdf4). Use h5netcdf for better Databricks compatibility.",
+    )
+    
     args = parser.parse_args()
 
     # Convert to Path objects
@@ -123,6 +132,7 @@ Examples:
     )
     print(f"Template: {template_file}")
     print(f"Output directory: {output_dir}")
+    print(f"Engine: {args.engine}")
     print()
 
     # Generate mock files
@@ -133,7 +143,7 @@ Examples:
 
         # Generate the mock file
         generate_mock_file(
-            template_file, output_path, num_ensemble_members=args.num_members
+            template_file, output_path, num_ensemble_members=args.num_members, engine=args.engine
         )
 
         # Progress update

@@ -50,6 +50,8 @@ python3 generate_mock_data.py data/example/652f73a7818c431a469c7ed3e9054e0a.nc d
 - `output_dir` - Directory where mock files will be saved (required)
 - `--num-files` - Number of mock files to generate (default: 100)
 - `--num-members` - Number of ensemble members per file (default: 50)
+- `--engine` - Engine to use for writing ('netcdf4' or 'h5netcdf', default: 'netcdf4')
+  - Use `--engine h5netcdf` for better Databricks compatibility
 
 **Features:**
 - Preserves all metadata and attributes from the original file
@@ -205,15 +207,20 @@ This mock dataset is suitable for:
 
 ## Troubleshooting
 
-### h5netcdf Issues on Databricks
+### NetCDF/HDF5 Issues on Databricks
 
-If you encounter `H5DSget_num_scales` errors when using h5netcdf on Databricks, see [DATABRICKS_TROUBLESHOOTING.md](DATABRICKS_TROUBLESHOOTING.md) for:
-- Root cause explanation
-- Multiple solutions (including `phony_dims='sort'`)
-- Databricks-specific setup instructions
-- Diagnostic tools
+If you encounter errors on Databricks:
 
-**Quick fix**: The `benchmark_loading.py` script now automatically handles this with `backend_kwargs={'phony_dims': 'sort'}` for h5netcdf.
+**Error: `[Errno -101] NetCDF: HDF error`** (netCDF4 engine fails)
+- **Quick Fix**: See [DATABRICKS_QUICK_FIX.md](DATABRICKS_QUICK_FIX.md) - Copy & paste solution
+- **Root cause**: HDF5 library version conflicts, DBFS FUSE mount issues
+- **Solution**: Reinstall libraries, copy files to `/tmp/`, use h5netcdf as fallback
+
+**Error: `H5DSget_num_scales`** (h5netcdf engine fails)
+- **Quick fix**: The `benchmark_loading.py` script automatically handles this with `backend_kwargs={'phony_dims': 'sort'}` for h5netcdf
+- **Root cause**: Dimension scale incompatibility between netCDF4 and h5py
+
+**Full documentation**: [DATABRICKS_TROUBLESHOOTING.md](DATABRICKS_TROUBLESHOOTING.md)
 
 ### Diagnostic Script
 
