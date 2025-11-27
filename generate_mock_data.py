@@ -28,9 +28,9 @@ def generate_mock_file(template_path, output_path, num_ensemble_members=50):
     template_ds = xr.open_dataset(template_path)
 
     # Get dimensions from template
-    n_valid_time = template_ds.dims["valid_time"]
-    n_latitude = template_ds.dims["latitude"]
-    n_longitude = template_ds.dims["longitude"]
+    n_valid_time = template_ds.sizes["valid_time"]
+    n_latitude = template_ds.sizes["latitude"]
+    n_longitude = template_ds.sizes["longitude"]
 
     # Create new dimensions
     new_number = np.arange(num_ensemble_members)

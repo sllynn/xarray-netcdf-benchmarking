@@ -57,6 +57,11 @@ def benchmark_loading(
 
     try:
         # Open the multi-file dataset
+        # For h5netcdf: use phony_dims='sort' to handle dimension scale issues
+        backend_kwargs = {}
+        if engine == "h5netcdf":
+            backend_kwargs = {"phony_dims": "sort"}
+        
         ds = xr.open_mfdataset(
             file_pattern,
             engine=engine,
@@ -64,6 +69,7 @@ def benchmark_loading(
             chunks=chunks,
             combine="nested",
             concat_dim="file",
+            backend_kwargs=backend_kwargs,
         )
 
         open_time = time.time() - start_time

@@ -63,8 +63,14 @@ Verifies the generated mock files and displays statistics.
 
 **Usage:**
 ```bash
-python3 verify_mock_data.py
+python3 verify_mock_data.py <data_dir>
+
+# Example: Verify files in data directory
+python3 verify_mock_data.py data/
 ```
+
+**Arguments:**
+- `data_dir` - Directory containing NetCDF files to verify (required)
 
 **Output:**
 - File count
@@ -196,6 +202,30 @@ This mock dataset is suitable for:
 - Testing distributed computing frameworks
 - Performance analysis of geospatial algorithms
 - Development without requiring large real datasets from Copernicus
+
+## Troubleshooting
+
+### h5netcdf Issues on Databricks
+
+If you encounter `H5DSget_num_scales` errors when using h5netcdf on Databricks, see [DATABRICKS_TROUBLESHOOTING.md](DATABRICKS_TROUBLESHOOTING.md) for:
+- Root cause explanation
+- Multiple solutions (including `phony_dims='sort'`)
+- Databricks-specific setup instructions
+- Diagnostic tools
+
+**Quick fix**: The `benchmark_loading.py` script now automatically handles this with `backend_kwargs={'phony_dims': 'sort'}` for h5netcdf.
+
+### Diagnostic Script
+
+Use `diagnose_h5netcdf_issue.py` to troubleshoot reading issues:
+
+```bash
+# Check library versions
+python diagnose_h5netcdf_issue.py --versions-only
+
+# Test reading a specific file
+python diagnose_h5netcdf_issue.py data/my_file.nc
+```
 
 ## Notes
 

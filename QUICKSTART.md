@@ -31,7 +31,8 @@ python generate_mock_data.py data/example/652f73a7818c431a469c7ed3e9054e0a.nc da
 Checks the generated files and displays statistics.
 
 ```bash
-python verify_mock_data.py
+# Verify files in data directory
+python verify_mock_data.py data/
 ```
 
 **Output**: File count, dimensions, sample statistics
@@ -132,6 +133,16 @@ raster-benchmarking/
 └── benchmark_results_*.csv         # Benchmark output files
 ```
 
+## Troubleshooting
+
+### h5netcdf Error on Databricks
+
+If you see `H5DSget_num_scales` error with h5netcdf:
+
+**Quick fix**: Already handled in `benchmark_loading.py` with `phony_dims='sort'`
+
+See [DATABRICKS_TROUBLESHOOTING.md](DATABRICKS_TROUBLESHOOTING.md) for details.
+
 ## FAQ
 
 ### Q: Why is netCDF4 faster than h5netcdf?
@@ -140,6 +151,8 @@ A: For this specific workload (reading NetCDF files with multi-file aggregation)
 - Direct HDF5 file access
 - Threading-based workflows
 - Specific cloud storage scenarios
+
+**Note**: h5netcdf may have compatibility issues on Databricks (see troubleshooting above).
 
 ### Q: Why disable caching?
 
