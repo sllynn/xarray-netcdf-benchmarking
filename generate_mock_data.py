@@ -58,11 +58,9 @@ def generate_mock_file(template_path, output_path, num_ensemble_members=50, engi
         # Copy t2m attributes but fix the coordinates attribute
     t2m_attrs = template_ds["t2m"].attrs.copy()
     
-    # Update the 'coordinates' attribute to match our actual coordinates
-    if "expver" in coords:
-        t2m_attrs["coordinates"] = "number valid_time latitude longitude expver"
-    else:
-        t2m_attrs["coordinates"] = "number valid_time latitude longitude"
+    # Remove the coordinates attribute - xarray will infer from dataset structure
+    if "coordinates" in t2m_attrs:
+        del t2m_attrs["coordinates"]
 
     # Create new dataset with modified dimensions
     new_ds = xr.Dataset(
