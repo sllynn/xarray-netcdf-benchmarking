@@ -55,13 +55,22 @@ def generate_mock_file(template_path, output_path, num_ensemble_members=50, engi
     if "expver" in template_ds:
         coords["expver"] = template_ds["expver"]
 
+        # Copy t2m attributes but fix the coordinates attribute
+    t2m_attrs = template_ds["t2m"].attrs.copy()
+    
+    # Update the 'coordinates' attribute to match our actual coordinates
+    if "expver" in coords:
+        t2m_attrs["coordinates"] = "number valid_time latitude longitude expver"
+    else:
+        t2m_attrs["coordinates"] = "number valid_time latitude longitude"
+
     # Create new dataset with modified dimensions
     new_ds = xr.Dataset(
         data_vars={
             "t2m": (
                 ["number", "valid_time", "latitude", "longitude"],
                 random_t2m,
-                template_ds["t2m"].attrs.copy(),
+                t2m_attrs,
             ),
         },
         coords=coords,
