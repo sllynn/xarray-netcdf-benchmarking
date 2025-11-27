@@ -213,6 +213,34 @@ This mock dataset is suitable for:
 - Performance analysis of geospatial algorithms
 - Development without requiring large real datasets from Copernicus
 
+## Databricks Compatibility
+
+### h5netcdf on Databricks ML Runtime
+
+**Issue**: h5netcdf has HDF5 dimension scale compatibility issues on Databricks ML Runtime due to version conflicts with pre-installed h5py.
+
+**Solution**: **Use netCDF4 engine (default)** - it's more reliable and faster (1.9x).
+
+```bash
+# On Databricks: Use netCDF4 (default)
+python generate_mock_data.py /dbfs/template.nc /tmp/data/ --num-files 100
+python benchmark_loading.py "/tmp/data/*.nc" --output-dir /tmp/results/
+```
+
+**Why netCDF4 is better on Databricks**:
+- ✅ Works reliably (no HDF5 dimension scale issues)
+- ✅ 1.9x faster (from benchmarks)
+- ✅ No library version conflicts
+- ✅ Standard NetCDF-4 compliant files
+
+### Version Compatibility
+
+This project uses library versions matching **Databricks ML Runtime**:
+- h5py 3.12.1 (DBR ML pre-installed version)
+- h5netcdf 1.3.0 (compatible with h5py 3.12.1)
+
+These versions ensure your local environment behaves identically to Databricks.
+
 ## Troubleshooting
 
 ### Diagnostic Script

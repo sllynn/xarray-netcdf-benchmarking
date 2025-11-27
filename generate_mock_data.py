@@ -43,6 +43,18 @@ def generate_mock_file(template_path, output_path, num_ensemble_members=50, engi
         220, 320, size=(num_ensemble_members, n_valid_time, n_latitude, n_longitude)
     ).astype(np.float32)
 
+    # Prepare coordinates dictionary
+    coords = {
+        "number": (["number"], new_number, template_ds["number"].attrs.copy()),
+        "valid_time": template_ds["valid_time"],
+        "latitude": template_ds["latitude"],
+        "longitude": template_ds["longitude"],
+    }
+
+    # Add expver as a coordinate (not a data variable!)
+    if "expver" in template_ds:
+        coords["expver"] = template_ds["expver"]
+
     # Create new dataset with modified dimensions
     new_ds = xr.Dataset(
         data_vars={
@@ -51,14 +63,8 @@ def generate_mock_file(template_path, output_path, num_ensemble_members=50, engi
                 random_t2m,
                 template_ds["t2m"].attrs.copy(),
             ),
-            "expver": template_ds["expver"] if "expver" in template_ds else None,
         },
-        coords={
-            "number": (["number"], new_number, template_ds["number"].attrs.copy()),
-            "valid_time": template_ds["valid_time"],
-            "latitude": template_ds["latitude"],
-            "longitude": template_ds["longitude"],
-        },
+        coords=coords,
         attrs=template_ds.attrs.copy(),
     )
 
@@ -67,15 +73,7 @@ def generate_mock_file(template_path, output_path, num_ensemble_members=50, engi
         new_ds["t2m"].attrs["GRIB_totalNumber"] = num_ensemble_members
     
     # Save to NetCDF file
-    # For h5netcdf on Databricks, use invalid_netcdf=True to avoid dimension scale issues
-    if engine == "h5netcdf":
-        new_ds.to_netcdf(
-            output_path, 
-            engine=engine,
-            invalid_netcdf=True  # Skip dimension scales to avoid H5DSset_scale errors
-        )
-    else:
-        new_ds.to_netcdf(output_path, engine=engine)
+    new_ds.to_netcdf(output_path, engine=engine)
 
     # Close datasets
     template_ds.close()
@@ -119,7 +117,7 @@ Examples:
         type=str,
         default="netcdf4",
         choices=["netcdf4", "h5netcdf"],
-        help="Engine to use for writing files (default: netcdf4). Use h5netcdf for better Databricks compatibility.",
+        help="Engine to use for writing files (default: netcdf4). Note: h5netcdf may not work on Databricks.",
     )
     
     args = parser.parse_args()

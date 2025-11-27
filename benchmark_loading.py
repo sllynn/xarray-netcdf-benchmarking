@@ -57,13 +57,11 @@ def benchmark_loading(
 
     try:
         # Open the multi-file dataset
-        # For h5netcdf: use phony_dims='sort' and invalid_netcdf=True 
-        # to handle dimension scale issues on Databricks
+        # For h5netcdf: use phony_dims='sort' to handle dimension scale issues
         backend_kwargs = {}
         if engine == "h5netcdf":
             backend_kwargs = {
-                "phony_dims": "sort",
-                "invalid_netcdf": True  # Allow reading non-compliant files
+                "phony_dims": "sort"
             }
         
         ds = xr.open_mfdataset(

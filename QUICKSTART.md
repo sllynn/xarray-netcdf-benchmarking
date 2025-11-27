@@ -144,11 +144,17 @@ raster-benchmarking/
 
 ### h5netcdf Error on Databricks
 
-If you see `H5DSget_num_scales` error with h5netcdf:
+If you see `H5DSget_num_scales` or `H5DSset_scale` errors with h5netcdf:
 
-**Quick fix**: Already handled in `benchmark_loading.py` with `phony_dims='sort'`
+**Solution**: Use **netCDF4 engine** (default) instead - it's more reliable and 1.9x faster.
 
-See [DATABRICKS_TROUBLESHOOTING.md](DATABRICKS_TROUBLESHOOTING.md) for details.
+```bash
+# Just use the defaults - no special flags needed
+python generate_mock_data.py template.nc output/
+python benchmark_loading.py "output/*.nc"
+```
+
+See [README.md](README.md#databricks-compatibility) for details.
 
 ## FAQ
 
