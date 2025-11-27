@@ -1,0 +1,8 @@
+xarray>=2023.0.0
+netCDF4>=1.6.0
+h5py>=3.8.0
+h5netcdf>=1.1.0
+numpy>=1.24.0
+dask[complete]>=2023.0.0
+pandas>=2.0.0
+
