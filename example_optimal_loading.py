@@ -15,7 +15,7 @@ from pathlib import Path
 
 def load_data_optimal():
     """Load data using the optimal configuration."""
-    data_dir = Path("/Users/stuart.lynn/Customers/LSEG/raster-benchmarking/data")
+    data_dir = Path("/tmp/benchmarking")
     file_pattern = str(data_dir / "*.nc")
 
     print("Loading data with optimal configuration...")
