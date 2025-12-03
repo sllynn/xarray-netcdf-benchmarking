@@ -20,8 +20,6 @@ data/*.nc
 data/zarr*
 data/references*
 
-# Results files
-results/
 
 # IDE
 .vscode/

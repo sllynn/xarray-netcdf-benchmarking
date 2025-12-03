@@ -1,0 +1,94 @@
+[
+  {
+    "description": "Combined master.json, native chunks",
+    "is_combined": true,
+    "chunks": "None",
+    "remote_protocol": "file",
+    "open_time": 0.24031543731689453,
+    "access_time": 0.02635931968688965,
+    "total_time": 0.2667407989501953,
+    "success": true,
+    "error": null,
+    "dataset_info": {
+      "shape": {
+        "number": 50,
+        "valid_time": 100,
+        "latitude": 361,
+        "longitude": 720
+      },
+      "variables": [
+        "t2m"
+      ],
+      "chunks": "None"
+    }
+  },
+  {
+    "description": "Combined master.json, auto rechunking",
+    "is_combined": true,
+    "chunks": "{}",
+    "remote_protocol": "file",
+    "open_time": 0.0951840877532959,
+    "access_time": 0.15972089767456055,
+    "total_time": 0.2550070285797119,
+    "success": true,
+    "error": null,
+    "dataset_info": {
+      "shape": {
+        "number": 50,
+        "valid_time": 100,
+        "latitude": 361,
+        "longitude": 720
+      },
+      "variables": [
+        "t2m"
+      ],
+      "chunks": "Frozen({'number': (50,), 'valid_time': (1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1), 'latitude': (361,), 'longitude': (720,)})"
+    }
+  },
+  {
+    "description": "Combined master.json, time-optimized chunks",
+    "is_combined": true,
+    "chunks": "{'number': 7, 'valid_time': -1, 'latitude': 184, 'longitude': 360}",
+    "remote_protocol": "file",
+    "open_time": 0.014556646347045898,
+    "access_time": 0.028052806854248047,
+    "total_time": 0.04268527030944824,
+    "success": true,
+    "error": null,
+    "dataset_info": {
+      "shape": {
+        "number": 50,
+        "valid_time": 100,
+        "latitude": 361,
+        "longitude": 720
+      },
+      "variables": [
+        "t2m"
+      ],
+      "chunks": "Frozen({'number': (7, 7, 7, 7, 7, 7, 7, 1), 'valid_time': (100,), 'latitude': (184, 177), 'longitude': (360, 360)})"
+    }
+  },
+  {
+    "description": "Combined master.json, ensemble-optimized chunks",
+    "is_combined": true,
+    "chunks": "{'number': -1, 'valid_time': 1, 'latitude': 184, 'longitude': 360}",
+    "remote_protocol": "file",
+    "open_time": 0.013541460037231445,
+    "access_time": 0.02771306037902832,
+    "total_time": 0.04133105278015137,
+    "success": true,
+    "error": null,
+    "dataset_info": {
+      "shape": {
+        "number": 50,
+        "valid_time": 100,
+        "latitude": 361,
+        "longitude": 720
+      },
+      "variables": [
+        "t2m"
+      ],
+      "chunks": "Frozen({'number': (50,), 'valid_time': (1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1), 'latitude': (184, 177), 'longitude': (360, 360)})"
+    }
+  }
+]

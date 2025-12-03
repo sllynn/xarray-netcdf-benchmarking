@@ -1,0 +1,71 @@
+[
+  {
+    "description": "Native Zarr chunks, with cache",
+    "is_single": false,
+    "cache": true,
+    "chunks": "None",
+    "open_time": 1.7573535442352295,
+    "access_time": 0.02255415916442871,
+    "total_time": 1.7808709144592285,
+    "success": true,
+    "error": null,
+    "dataset_info": {
+      "shape": {
+        "number": 50,
+        "valid_time": 100,
+        "latitude": 361,
+        "longitude": 720
+      },
+      "variables": [
+        "t2m"
+      ],
+      "chunks": "Frozen({'number': (13, 13, 13, 11), 'valid_time': (1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1), 'latitude': (91, 91, 91, 88), 'longitude': (180, 180, 180, 180)})"
+    }
+  },
+  {
+    "description": "Native Zarr chunks, no cache",
+    "is_single": false,
+    "cache": false,
+    "chunks": "None",
+    "open_time": 0.652338981628418,
+    "access_time": 0.02129650115966797,
+    "total_time": 0.6745603084564209,
+    "success": true,
+    "error": null,
+    "dataset_info": {
+      "shape": {
+        "number": 50,
+        "valid_time": 100,
+        "latitude": 361,
+        "longitude": 720
+      },
+      "variables": [
+        "t2m"
+      ],
+      "chunks": "Frozen({'number': (13, 13, 13, 11), 'valid_time': (1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1), 'latitude': (91, 91, 91, 88), 'longitude': (180, 180, 180, 180)})"
+    }
+  },
+  {
+    "description": "Auto rechunking, with cache",
+    "is_single": false,
+    "cache": true,
+    "chunks": "{}",
+    "open_time": 0.6635129451751709,
+    "access_time": 0.021405696868896484,
+    "total_time": 0.6858818531036377,
+    "success": true,
+    "error": null,
+    "dataset_info": {
+      "shape": {
+        "number": 50,
+        "valid_time": 100,
+        "latitude": 361,
+        "longitude": 720
+      },
+      "variables": [
+        "t2m"
+      ],
+      "chunks": "Frozen({'number': (13, 13, 13, 11), 'valid_time': (1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1), 'latitude': (91, 91, 91, 88), 'longitude': (180, 180, 180, 180)})"
+    }
+  }
+]
