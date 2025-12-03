@@ -16,9 +16,6 @@ from datetime import datetime
 import json
 import warnings
 
-# Suppress Zarr V3 warnings about unstable specifications
-warnings.filterwarnings('ignore', category=UserWarning, module='zarr')
-
 
 def convert_individual(nc_files, output_dir, engine="netcdf4"):
     """
