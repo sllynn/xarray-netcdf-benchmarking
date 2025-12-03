@@ -1,115 +1,132 @@
-# Raster Benchmarking - Mock NetCDF Data Generator
+# Raster Benchmarking
 
-This repository contains tools for generating mock NetCDF files based on Copernicus Climate Data Store format.
+Tools for benchmarking cloud-optimized geospatial data formats and access patterns on Databricks, with a focus on NetCDF, Zarr, and Kerchunk.
 
 ## Overview
 
-The mock dataset consists of **100 NetCDF files**, each containing temperature forecast data with **50 ensemble members** (increased from the original 10 in the template file).
+This repository provides a comprehensive toolkit for:
+
+1. **Generating mock data** - Create realistic NetCDF test datasets based on Copernicus Climate Data Store format
+2. **Format conversion** - Convert NetCDF files to cloud-optimized Zarr format (individual or stacked)
+3. **Kerchunk indexing** - Create virtual Zarr references from existing NetCDF files without data duplication
+4. **Performance benchmarking** - Compare loading performance across formats and storage locations
+
+## Key Findings
+
+**Remote Storage Performance (Unity Catalog Volumes, 100 files, ~1.3B data points):**
+
+| Format | Open Time | Access Time | Total Time |
+|--------|-----------|-------------|------------|
+| Zarr Stacked | 2.66s | 1.41s | **4.08s** |
+| Kerchunk Combined | 1.49s | 3.31s | 4.80s |
+| Zarr Individual (100 dirs) | 18.0s | 1.16s | 19.2s |
+
+**Recommendations:**
+- ✅ **Kerchunk Combined** delivers ~95% of Zarr's performance with zero data duplication
+- ✅ **Zarr Stacked** is optimal when read latency is critical (~4s)
+- ❌ Avoid accessing many individual files over network storage (4-5× slower)
 
 ## Dataset Specifications
 
-- **Number of files**: 100
+The benchmark dataset consists of **100 files**, each containing temperature forecast data:
+
 - **Ensemble members per file**: 50
 - **Spatial dimensions**: 361 × 720 (latitude × longitude)
 - **Resolution**: 0.5° × 0.5° global grid
 - **Variable**: 2-meter temperature (t2m) in Kelvin
-- **Data**: Random values between 220K and 320K (-53°C to 47°C)
-- **File size**: ~50 MB per file
-
-## Structure
-
-```
-data/
-├── example/
-│   └── 652f73a7818c431a469c7ed3e9054e0a.nc  (original template with 10 ensemble members)
-├── <uuid1>.nc  (50 ensemble members)
-├── <uuid2>.nc  (50 ensemble members)
-├── ...
-└── <uuid100>.nc  (50 ensemble members)
-```
+- **File size**: ~50 MB per file (NetCDF)
 
 ## Scripts
 
-### `generate_mock_data.py`
+### Data Generation
+
+#### `generate_mock_data.py`
 
 Generates mock NetCDF files based on a template file.
 
-**Usage:**
 ```bash
-python3 generate_mock_data.py <template_file> <output_dir> [options]
+# Generate 100 files with 50 ensemble members (default)
+python generate_mock_data.py data/example/template.nc data/
 
-# Example: Generate 100 files with 50 ensemble members (default)
-python3 generate_mock_data.py data/example/652f73a7818c431a469c7ed3e9054e0a.nc data/
-
-# Example: Generate 50 files with 25 ensemble members
-python3 generate_mock_data.py data/example/652f73a7818c431a469c7ed3e9054e0a.nc data/ --num-files 50 --num-members 25
+# Generate custom number of files and members
+python generate_mock_data.py data/example/template.nc data/ --num-files 50 --num-members 25
 ```
 
-**Arguments:**
-- `template_file` - Path to the template NetCDF file (required)
-- `output_dir` - Directory where mock files will be saved (required)
-- `--num-files` - Number of mock files to generate (default: 100)
-- `--num-members` - Number of ensemble members per file (default: 50)
-- `--engine` - Engine to use for writing ('netcdf4' or 'h5netcdf', default: 'netcdf4')
-  - Use `--engine h5netcdf` for better Databricks compatibility
+#### `verify_mock_data.py`
 
-**Features:**
-- Preserves all metadata and attributes from the original file
-- Generates random temperature data (220-320K range)
-- Creates files with unique UUID filenames
-- Flexible ensemble size and file count
+Verifies generated files and displays statistics.
 
-### `verify_mock_data.py`
-
-Verifies the generated mock files and displays statistics.
-
-**Usage:**
 ```bash
-python3 verify_mock_data.py <data_dir>
-
-# Example: Verify files in data directory
-python3 verify_mock_data.py data/
+python verify_mock_data.py data/
 ```
 
-**Arguments:**
-- `data_dir` - Directory containing NetCDF files to verify (required)
+### Format Conversion
 
-**Output:**
-- File count
-- Dimensions verification
-- Sample data statistics
-- Spatial coverage details
+#### `convert_to_zarr.py`
 
-### `benchmark_loading.py`
+Converts NetCDF files to Zarr format.
 
-Benchmarks different xarray loading strategies across multiple configurations.
-
-**Usage:**
 ```bash
-source .venv/bin/activate
+# Convert to individual Zarr directories (one per NetCDF)
+python convert_to_zarr.py individual "data/*.nc" zarr_individual/
 
-# Basic usage with default output directory
-python benchmark_loading.py "data/*.nc"
+# Convert to a single stacked Zarr (all files combined)
+python convert_to_zarr.py stacked "data/*.nc" zarr_stacked.zarr
+```
 
-# Specify output directory for results
+#### `create_kerchunk_refs.py`
+
+Creates Kerchunk reference files from NetCDF without data duplication.
+
+```bash
+# Create individual JSON references + combined master.json
+python create_kerchunk_refs.py "data/*.nc" references/
+
+# Only create individual references (skip master.json)
+python create_kerchunk_refs.py "data/*.nc" references/ --skip-combine
+```
+
+### Benchmarking
+
+#### `benchmark_loading.py`
+
+Benchmarks NetCDF loading with different xarray configurations.
+
+```bash
 python benchmark_loading.py "data/*.nc" --output-dir results/
 ```
 
-**Arguments:**
-- `file_pattern` - Glob pattern for NetCDF files to benchmark (required)
-- `-o, --output-dir` - Directory where results will be saved (default: current directory)
+Tests: netcdf4 vs h5netcdf engines, caching, Dask chunking strategies.
 
-**Tests:**
-- Engine comparison: netcdf4 vs h5netcdf
-- Caching: enabled vs disabled
-- Dask: auto chunks vs specific chunks vs no chunks
-- Generates CSV and JSON reports with detailed timing
+#### `benchmark_loading_zarr.py`
+
+Benchmarks Zarr loading performance.
+
+```bash
+# Benchmark stacked Zarr
+python benchmark_loading_zarr.py --single zarr_stacked.zarr -o results/
+
+# Benchmark individual Zarr directories
+python benchmark_loading_zarr.py "zarr_individual/*.zarr" -o results/
+```
+
+#### `benchmark_loading_kerchunk.py`
+
+Benchmarks Kerchunk reference loading performance.
+
+```bash
+# Benchmark combined master.json
+python benchmark_loading_kerchunk.py --combined references/master.json -o results/
+
+# Benchmark individual JSON references
+python benchmark_loading_kerchunk.py "references/*.json" -o results/
+```
 
 ## Environment Setup
 
-This project uses a virtual environment with `uv` for fast, reproducible package management.
+This project uses `uv` for fast, reproducible package management.
 
-**All requirements match Databricks ML Runtime for consistency.**
+**All requirements match Databricks ML Runtime 17.3LTS for consistency.**
 
 ```bash
 # Create virtual environment
@@ -121,144 +138,66 @@ uv pip compile requirements.txt -o requirements.lock
 uv pip install -r requirements.lock
 ```
 
-**Key versions** (matching Databricks ML Runtime):
-- h5py 3.12.1 (matches DBR ML pre-installed version)
-- h5netcdf 1.3.0 (compatible with h5py 3.12.1)
-- xarray 2024.3.0
-- netCDF4 1.7.3
-
-This ensures **identical behavior** between local development and Databricks.
-
 ### Requirements
 
-Core dependencies (see `requirements.txt`):
-- xarray 2024.3.0
+All versions match **Databricks ML Runtime 17.3LTS** (see `requirements.txt`):
+
+- xarray 2025.11.0
+- zarr 3.1.5
 - netCDF4 1.7.3
-- h5py 3.12.1 (matches Databricks ML Runtime)
-- h5netcdf 1.3.0 (compatible with h5py 3.12.1)
-- numpy 2.3.5
+- numpy 2.1.3
+- pandas 2.2.3
 - dask[complete] 2025.11.0
-- pandas 2.3.3
+- h5py 3.12.1 (matches DBR 17.3LTS pre-installed version)
+- h5netcdf 1.3.0 (compatible with h5py 3.12.1)
+- kerchunk 0.2.9
+- fsspec 2025.10.0
 
 Exact versions are locked in `requirements.lock` for reproducibility.
 
-**Note:** These versions match Databricks ML Runtime to ensure consistent behavior.
+## Workflow Example
 
-## NetCDF File Structure
-
-Each generated file contains:
-
-**Dimensions:**
-- `number`: 50 (ensemble members)
-- `valid_time`: 1 (single forecast time)
-- `latitude`: 361 (90° to -90°)
-- `longitude`: 720 (0° to 359.5°)
-
-**Variables:**
-- `t2m`: Temperature at 2 meters, shape (50, 1, 361, 720)
-- `number`: Ensemble member IDs (0-49)
-- `valid_time`: Forecast validation time
-- `latitude`: Latitude coordinates
-- `longitude`: Longitude coordinates
-- `expver`: Experiment version
-
-**Data Variable Attributes:**
-- Units: Kelvin (K)
-- Type: float32
-- FillValue: NaN
-- Plus various GRIB metadata attributes
-
-## Technical Details
-
-The mock data generation uses **xarray** for reading and writing NetCDF files, which provides:
-- Seamless handling of NetCDF metadata and attributes
-- Preservation of coordinate reference systems
-- Compatibility with CF conventions
-- Efficient I/O operations
-
-Random data is generated using NumPy's uniform distribution to simulate realistic temperature ranges across the globe.
-
-## Benchmarking Results
-
-**🏆 Optimal Loading Configuration:**
-
-```python
-import xarray as xr
-
-ds = xr.open_mfdataset(
-    'data/*.nc',
-    engine='netcdf4',    # netCDF4 is 1.9x faster than h5netcdf
-    cache=False,         # Caching degrades performance
-    chunks={},           # Auto Dask chunking: 15x faster than eager
-    combine='nested',
-    concat_dim='file'
-)
-```
-
-**Performance**: Loads 100 files (5GB) in ~0.5 seconds
-
-See [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) for detailed analysis.
-
-### Key Findings
-- ✅ **netCDF4 engine** outperforms h5netcdf by 1.89x
-- ✅ **Dask with auto-chunking** provides 15.8x speedup
-- ✅ **Disabling cache** improves performance by 11%
-- ❌ h5netcdf was **not** faster than netCDF4 in our tests
-
-## Use Cases
-
-This mock dataset is suitable for:
-- Benchmarking raster processing pipelines
-- Testing distributed computing frameworks
-- Performance analysis of geospatial algorithms
-- Development without requiring large real datasets from Copernicus
-
-## Databricks Compatibility
-
-### h5netcdf on Databricks ML Runtime
-
-**Issue**: h5netcdf has HDF5 dimension scale compatibility issues on Databricks ML Runtime due to version conflicts with pre-installed h5py.
-
-**Solution**: **Use netCDF4 engine (default)** - it's more reliable and faster (1.9x).
+Complete workflow from raw NetCDF to benchmarking:
 
 ```bash
-# On Databricks: Use netCDF4 (default)
-python generate_mock_data.py /dbfs/template.nc /tmp/data/ --num-files 100
-python benchmark_loading.py "/tmp/data/*.nc" --output-dir /tmp/results/
+# 1. Generate mock data
+python generate_mock_data.py template.nc data/ --num-files 100
+
+# 2. Create Kerchunk references (no data duplication)
+python create_kerchunk_refs.py "data/*.nc" references/
+
+# 3. Convert to Zarr (creates copy of data)
+python convert_to_zarr.py stacked "data/*.nc" zarr_stacked.zarr
+
+# 4. Run benchmarks
+python benchmark_loading_kerchunk.py --combined references/master.json -o results/kerchunk/
+python benchmark_loading_zarr.py --single zarr_stacked.zarr -o results/zarr/
 ```
 
-**Why netCDF4 is better on Databricks**:
-- ✅ Works reliably (no HDF5 dimension scale issues)
-- ✅ 1.9x faster (from benchmarks)
-- ✅ No library version conflicts
-- ✅ Standard NetCDF-4 compliant files
+## Project Structure
 
-### Version Compatibility
-
-This project uses library versions matching **Databricks ML Runtime**:
-- h5py 3.12.1 (DBR ML pre-installed version)
-- h5netcdf 1.3.0 (compatible with h5py 3.12.1)
-
-These versions ensure your local environment behaves identically to Databricks.
-
-## Troubleshooting
-
-### Diagnostic Script
-
-Use `diagnose_h5netcdf_issue.py` to troubleshoot reading issues:
-
-```bash
-# Check library versions
-python diagnose_h5netcdf_issue.py --versions-only
-
-# Test reading a specific file
-python diagnose_h5netcdf_issue.py data/my_file.nc
+```
+raster-benchmarking/
+├── data/                           # NetCDF files
+│   └── example/                    # Template file
+├── references/                     # Kerchunk JSON references
+│   ├── *.json                      # Per-file references
+│   └── master.json                 # Combined virtual dataset
+├── results/                        # Benchmark results
+│   ├── local/                      # Local storage benchmarks
+│   └── remote/                     # Remote storage benchmarks
+├── generate_mock_data.py           # Create mock NetCDF files
+├── verify_mock_data.py             # Verify generated files
+├── convert_to_zarr.py              # NetCDF → Zarr conversion
+├── create_kerchunk_refs.py         # Create Kerchunk references
+├── benchmark_loading.py            # NetCDF benchmarks
+├── benchmark_loading_zarr.py       # Zarr benchmarks
+├── benchmark_loading_kerchunk.py   # Kerchunk benchmarks
+├── requirements.txt                # Package dependencies
+└── requirements.lock               # Locked versions
 ```
 
-## Notes
+## Further Reading
 
-- File names are generated using UUID4 to ensure uniqueness
-- The original template file is preserved in `data/example/`
-- All generated files maintain the same structure and metadata as the template
-- Random seed is not set, so each run produces different data
-
+- [QUICKSTART.md](QUICKSTART.md) - Quick start guide
+- [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) - Detailed benchmark analysis

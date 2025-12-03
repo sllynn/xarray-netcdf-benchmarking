@@ -7,7 +7,7 @@
 uv venv .venv
 source .venv/bin/activate
 
-# Install dependencies (matches Databricks ML Runtime)
+# Install dependencies (matches Databricks ML Runtime 17.3LTS)
 uv pip compile requirements.txt -o requirements.lock
 uv pip install -r requirements.lock
 
@@ -15,7 +15,7 @@ uv pip install -r requirements.lock
 python -c "import xarray, dask; print('✓ Environment ready!')"
 ```
 
-**Note:** All versions match Databricks ML Runtime for consistency.
+**Note:** All versions match Databricks ML Runtime 17.3LTS for consistency.
 
 ## Available Scripts
 
