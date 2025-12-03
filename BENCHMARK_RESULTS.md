@@ -1,4 +1,4 @@
-# Benchmarking Results: XArray Loading Performance
+# Local Storage Benchmarking Results: XArray Loading Performance
 
 ## Executive Summary
 
