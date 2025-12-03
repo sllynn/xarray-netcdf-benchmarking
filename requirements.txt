@@ -1,10 +1,13 @@
 # Databricks ML Runtime Compatible Requirements
 # Versions match DBR ML to ensure consistent behavior between local and Databricks
+# Latest versions for maximum performance and features
+# Using xarray 2025.11.0 with zarr 3.x for Kerchunk compatibility
 
-xarray==2024.3.0
+xarray==2025.11.0
 netCDF4==1.7.3
+zarr==3.1.5
 numpy==2.1.3
-dask[complete]==2025.11.0
+dask[complete]>=2025.11.0
 pandas==2.2.3
 
 # h5py and h5netcdf versions MUST match Databricks ML Runtime
@@ -15,3 +18,4 @@ h5netcdf==1.3.0
 
 adlfs==2025.8.0
 kerchunk==0.2.9
+fsspec==2025.10.0

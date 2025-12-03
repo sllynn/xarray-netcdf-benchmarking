@@ -17,6 +17,10 @@ benchmark_results_*.json
 # Data files (except example)
 data/*.nc
 !data/example/*.nc
+data/zarr*
+
+# Results files
+results/
 
 # IDE
 .vscode/

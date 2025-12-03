@@ -65,6 +65,7 @@ frozenlist==1.8.0
     #   aiosignal
 fsspec==2025.10.0
     # via
+    #   -r requirements.txt
     #   adlfs
     #   dask
     #   kerchunk
@@ -112,7 +113,7 @@ multidict==6.7.0
     # via
     #   aiohttp
     #   yarl
-narwhals==2.12.0
+narwhals==2.13.0
     # via bokeh
 netcdf4==1.7.3
     # via -r requirements.txt
@@ -210,14 +211,16 @@ urllib3==2.5.0
     # via
     #   distributed
     #   requests
-xarray==2024.3.0
+xarray==2025.11.0
     # via -r requirements.txt
 xyzservices==2025.11.0
     # via bokeh
 yarl==1.22.0
     # via aiohttp
 zarr==3.1.5
-    # via kerchunk
+    # via
+    #   -r requirements.txt
+    #   kerchunk
 zict==3.0.0
     # via distributed
 zipp==3.23.0
