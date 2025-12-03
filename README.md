@@ -203,7 +203,7 @@ See [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) for detailed analysis.
 - ✅ **netCDF4 engine** outperforms h5netcdf by 1.89x
 - ✅ **Dask with auto-chunking** provides 15.8x speedup
 - ✅ **Disabling cache** improves performance by 11%
-- ❌ Customer's hypothesis that h5netcdf would be faster was not confirmed
+- ❌ h5netcdf was **not** faster than netCDF4 in our tests
 
 ## Use Cases
 

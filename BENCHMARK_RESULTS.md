@@ -7,7 +7,7 @@
 - **Loading time**: 0.526 seconds
 - **Total time**: 0.563 seconds
 - **Performance**: 1.89x faster than best h5netcdf method
-- **Conclusion**: The customer's hypothesis that h5netcdf (h5py) would be faster was **not confirmed**
+- **Conclusion**: h5netcdf (h5py) was **not** faster than netCDF4
 
 ## Key Findings
 
