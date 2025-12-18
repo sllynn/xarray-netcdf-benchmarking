@@ -1,10 +1,10 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # Zarr Store Initialization
-# MAGIC 
+# MAGIC
 # MAGIC This notebook demonstrates how to initialize a pre-allocated Zarr store
 # MAGIC for low-latency weather data ingestion.
-# MAGIC 
+# MAGIC
 # MAGIC **Key features:**
 # MAGIC - Creates full directory structure for forecast cycle (145 steps, 360 hours)
 # MAGIC - Initializes all chunks with NaN (nodata) values
@@ -15,6 +15,14 @@
 
 # MAGIC %md
 # MAGIC ## Configuration
+
+# COMMAND ----------
+
+# MAGIC %pip install uv
+
+# COMMAND ----------
+
+# MAGIC %sh uv pip install -r ../requirements.lock
 
 # COMMAND ----------
 
@@ -41,7 +49,7 @@ LON_SIZE = 720
 # COMMAND ----------
 
 import sys
-sys.path.insert(0, '/Workspace/Repos/your_user/raster-benchmarking')
+# sys.path.insert(0, '/Workspace/Repos/your_user/raster-benchmarking')
 
 from datetime import datetime
 from src.zarr_init import (
@@ -56,7 +64,7 @@ from src.zarr_init import (
 
 # MAGIC %md
 # MAGIC ## Explore Forecast Step Structure
-# MAGIC 
+# MAGIC
 # MAGIC The forecast uses non-uniform time steps covering 360 hours:
 # MAGIC - Hours 0-90: Hourly (91 steps)
 # MAGIC - Hours 93-144: 3-hourly (18 steps)
@@ -78,7 +86,7 @@ print(f"\nLast 10 steps: {steps[-10:]}")
 
 # MAGIC %md
 # MAGIC ## Initialize Zarr Store (Local SSD)
-# MAGIC 
+# MAGIC
 # MAGIC Create the pre-allocated store on local SSD for high-IOPS processing.
 
 # COMMAND ----------
@@ -137,7 +145,7 @@ for var, nan_info in info['nan_counts'].items():
 
 # MAGIC %md
 # MAGIC ## Sync to Cloud Storage (Optional)
-# MAGIC 
+# MAGIC
 # MAGIC For the initial empty store, we can sync to cloud storage.
 # MAGIC During operation, only changed chunks will be synced.
 
@@ -153,7 +161,7 @@ for var, nan_info in info['nan_counts'].items():
 
 # MAGIC %md
 # MAGIC ## Success Criteria Validation
-# MAGIC 
+# MAGIC
 # MAGIC Per the architecture document, initialization should complete in < 30 seconds.
 
 # COMMAND ----------

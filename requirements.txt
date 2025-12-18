@@ -2,12 +2,12 @@
 # Versions match DBR 17.3LTS to ensure consistent behavior between local and Databricks
 # Using xarray 2025.11.0 with zarr 3.x for Kerchunk compatibility
 
-xarray==2025.11.0
+xarray==2024.03.0
 netCDF4==1.7.3
-zarr==3.1.5
-numpy==2.1.3
-dask[complete]==2025.11.0
-pandas==2.2.3
+zarr==2.18.2
+numpy==1.23.5
+dask[complete]==2024.2.1
+pandas==1.5.3
 cfgrib==0.9.15.1
 eccodes==2.44.0
 
@@ -18,6 +18,6 @@ h5py==3.12.1
 h5netcdf==1.3.0
 
 adlfs==2025.8.0
-kerchunk==0.2.9
+#kerchunk==0.2.9
 fsspec==2025.10.0
-databricks-connect==17.3.*
+databricks-connect==15.4.*
