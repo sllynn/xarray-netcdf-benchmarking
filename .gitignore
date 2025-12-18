@@ -16,6 +16,7 @@ benchmark_results_*.json
 
 # Data files (except example)
 data/*.nc
+data/*.grib
 !data/example/*.nc
 data/zarr*
 data/references*
@@ -32,3 +33,5 @@ data/references*
 .DS_Store
 Thumbs.db
 
+
+.databricks
