@@ -26,13 +26,17 @@
 
 # COMMAND ----------
 
+# MAGIC %restart_python
+
+# COMMAND ----------
+
 # Configuration
-CATALOG = "your_catalog"
-SCHEMA = "your_schema"
-VOLUME_NAME = "silver"
+CATALOG = "stuart"
+SCHEMA = "lseg"
+VOLUME_NAME = "netcdf"
 
 # Paths
-LOCAL_ZARR_PATH = "/local_disk0/forecast.zarr"
+LOCAL_ZARR_PATH = "/tmp/forecast.zarr"
 CLOUD_ZARR_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/forecast.zarr"
 
 # Forecast parameters
@@ -161,16 +165,19 @@ for var, nan_info in info['nan_counts'].items():
 
 # Get SAS token for the destination Volume using Databricks SDK
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service.catalog import GenerateTemporaryPathCredentialRequest, PathOperation
+from databricks.sdk.service.catalog import PathOperation
 
 w = WorkspaceClient()
 
+volume_root_url = w.volumes.read(f"{CATALOG}.{SCHEMA}.{VOLUME_NAME}").storage_location
+zarr_archive_url = CLOUD_ZARR_PATH.replace(f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}", volume_root_url)
+
+print(f"Destination: {zarr_archive_url}")
+
 # Generate temporary write credentials for the Volume
-creds = w.path_credentials.generate_temporary_path_credential(
-    GenerateTemporaryPathCredentialRequest(
-        path=CLOUD_ZARR_PATH,
-        operation=PathOperation.WRITE,
-    )
+creds = w.temporary_path_credentials.generate_temporary_path_credentials(
+        url=volume_root_url,
+        operation=PathOperation.PATH_READ_WRITE,
 )
 
 # Get the Azure SAS token
@@ -183,16 +190,58 @@ print(f"✓ Got SAS token (expires: {creds.expiration_time})")
 # Volume paths map to: https://<storage_account>.blob.core.windows.net/<container>/<path>
 # You need to know your storage account and container - check your external location config
 
-STORAGE_ACCOUNT = "your_storage_account"  # e.g., "mystorageaccount"
-CONTAINER = "your_container"              # e.g., "unity-catalog-volumes"
+STORAGE_ACCOUNT = zarr_archive_url.split("@")[-1].split(".")[0]  # e.g., "mystorageaccount"
+CONTAINER = zarr_archive_url.split("@")[0].split("//")[-1]              # e.g., "unity-catalog-volumes"
 
 # Extract the subpath from the Volume path
 # /Volumes/catalog/schema/volume_name/subpath -> subpath
 volume_subpath = "/".join(CLOUD_ZARR_PATH.split("/")[4:])  # Skip /Volumes/catalog/schema/volume
 
-azure_url = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER}/{volume_subpath}?{sas_token}"
+azure_url = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER}/{SCHEMA}/{volume_subpath}?{sas_token}"
 
-print(f"Destination: https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER}/{volume_subpath}")
+print(f"Destination: https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER}/{SCHEMA}/{volume_subpath}")
+
+# COMMAND ----------
+
+# Install azcopy if not already installed
+import subprocess
+import shutil
+import os
+
+azcopy_path = shutil.which("azcopy")
+
+if not azcopy_path:
+    # Check /tmp
+    import glob
+    existing = glob.glob("/tmp/azcopy/*/azcopy")
+    if existing:
+        azcopy_path = existing[0]
+
+if not azcopy_path:
+    print("Installing azcopy...")
+    os.makedirs("/tmp/azcopy", exist_ok=True)
+    
+    # Download and extract azcopy
+    subprocess.run([
+        "curl", "-sL", 
+        "https://aka.ms/downloadazcopy-v10-linux",
+        "-o", "/tmp/azcopy/azcopy.tar.gz"
+    ], check=True)
+    
+    subprocess.run([
+        "tar", "-xzf", "/tmp/azcopy/azcopy.tar.gz",
+        "-C", "/tmp/azcopy"
+    ], check=True)
+    
+    # Find the extracted binary
+    azcopy_path = glob.glob("/tmp/azcopy/*/azcopy")[0]
+    print(f"✓ azcopy installed: {azcopy_path}")
+else:
+    print(f"✓ azcopy already available: {azcopy_path}")
+
+# Verify
+result = subprocess.run([azcopy_path, "--version"], capture_output=True, text=True)
+print(result.stdout.strip())
 
 # COMMAND ----------
 
@@ -204,7 +253,7 @@ sync_start = time.time()
 
 result = subprocess.run(
     [
-        "azcopy", "sync",
+        azcopy_path, "sync",
         LOCAL_ZARR_PATH,
         azure_url,
         "--recursive=true",
