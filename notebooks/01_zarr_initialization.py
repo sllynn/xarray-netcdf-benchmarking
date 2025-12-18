@@ -148,14 +148,94 @@ for var, nan_info in info['nan_counts'].items():
 # MAGIC
 # MAGIC For the initial empty store, we can sync to cloud storage.
 # MAGIC During operation, only changed chunks will be synced.
+# MAGIC
+# MAGIC **Important:** `dbutils.fs.cp` is extremely slow for Zarr stores (many small files).
+# MAGIC Use `azcopy` instead for 10-50x faster transfers.
 
 # COMMAND ----------
 
-# Optional: Copy initial store to cloud
-# This uses dbutils for the initial copy since the store is empty
+# MAGIC %md
+# MAGIC ### Option 1: Fast sync with azcopy (recommended)
 
+# COMMAND ----------
+
+# Get SAS token for the destination Volume using Databricks SDK
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.catalog import GenerateTemporaryPathCredentialRequest, PathOperation
+
+w = WorkspaceClient()
+
+# Generate temporary write credentials for the Volume
+creds = w.path_credentials.generate_temporary_path_credential(
+    GenerateTemporaryPathCredentialRequest(
+        path=CLOUD_ZARR_PATH,
+        operation=PathOperation.WRITE,
+    )
+)
+
+# Get the Azure SAS token
+sas_token = creds.azure_user_delegation_sas.sas_token
+print(f"✓ Got SAS token (expires: {creds.expiration_time})")
+
+# COMMAND ----------
+
+# Construct the Azure Blob URL from the Volume path
+# Volume paths map to: https://<storage_account>.blob.core.windows.net/<container>/<path>
+# You need to know your storage account and container - check your external location config
+
+STORAGE_ACCOUNT = "your_storage_account"  # e.g., "mystorageaccount"
+CONTAINER = "your_container"              # e.g., "unity-catalog-volumes"
+
+# Extract the subpath from the Volume path
+# /Volumes/catalog/schema/volume_name/subpath -> subpath
+volume_subpath = "/".join(CLOUD_ZARR_PATH.split("/")[4:])  # Skip /Volumes/catalog/schema/volume
+
+azure_url = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER}/{volume_subpath}?{sas_token}"
+
+print(f"Destination: https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER}/{volume_subpath}")
+
+# COMMAND ----------
+
+# Run azcopy sync
+import subprocess
+import time
+
+sync_start = time.time()
+
+result = subprocess.run(
+    [
+        "azcopy", "sync",
+        LOCAL_ZARR_PATH,
+        azure_url,
+        "--recursive=true",
+        "--log-level=WARNING",
+    ],
+    capture_output=True,
+    text=True,
+)
+
+sync_elapsed = time.time() - sync_start
+
+if result.returncode == 0:
+    print(f"✓ Synced to cloud in {sync_elapsed:.1f} seconds")
+    print(result.stdout[-500:] if len(result.stdout) > 500 else result.stdout)
+else:
+    print(f"✗ Sync failed: {result.stderr}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Option 2: Slow fallback with dbutils (not recommended)
+
+# COMMAND ----------
+
+# WARNING: This is ~10-50x slower than azcopy for Zarr stores!
+# Only use if azcopy is not available
+
+# sync_start = time.time()
 # dbutils.fs.cp(f"file:{LOCAL_ZARR_PATH}", CLOUD_ZARR_PATH, recurse=True)
-# print(f"✓ Store synced to {CLOUD_ZARR_PATH}")
+# sync_elapsed = time.time() - sync_start
+# print(f"✓ Store synced in {sync_elapsed:.1f}s (slow method)")
 
 # COMMAND ----------
 
