@@ -348,6 +348,7 @@ def generate_mock_file(
     lat_size: int = 361,
     lon_size: int = 720,
     netcdf_engine: str = "netcdf4",
+    template_path: Optional[Path] = None,
 ) -> Path:
     """
     Generate a single mock file for one variable at one forecast step.
@@ -372,6 +373,8 @@ def generate_mock_file(
         Number of longitude points (default: 720 for 0.5° global grid)
     netcdf_engine : str
         Engine for NetCDF files ('netcdf4' or 'h5netcdf')
+    template_path : Path, optional
+        Path to a template NetCDF file to extract grid from
     
     Returns
     -------
@@ -380,9 +383,18 @@ def generate_mock_file(
     """
     var_config = VARIABLE_CONFIGS[variable]
     
-    # Create coordinate arrays (0.5° global grid, N to S, 0 to 360°)
-    latitudes = np.linspace(90, -90, lat_size)
-    longitudes = np.linspace(0, 359.5, lon_size)
+    # Get coordinates from template or use defaults
+    if template_path is not None:
+        template_ds = xr.open_dataset(template_path)
+        latitudes = template_ds["latitude"].values
+        longitudes = template_ds["longitude"].values
+        lat_size = len(latitudes)
+        lon_size = len(longitudes)
+        template_ds.close()
+    else:
+        # Create coordinate arrays (0.5° global grid, N to S, 0 to 360°)
+        latitudes = np.linspace(90, -90, lat_size)
+        longitudes = np.linspace(0, 359.5, lon_size)
     
     # Generate random data within realistic bounds
     data = np.random.uniform(
@@ -436,6 +448,7 @@ def generate_forecast_cycle(
     lon_size: int = 720,
     max_steps: Optional[int] = None,
     netcdf_engine: str = "netcdf4",
+    template_path: Optional[Path] = None,
 ) -> Dict[str, List[Path]]:
     """
     Generate a complete set of mock files for a forecast cycle.
@@ -463,6 +476,8 @@ def generate_forecast_cycle(
         Maximum number of steps to generate (for testing)
     netcdf_engine : str
         Engine for NetCDF files ('netcdf4' or 'h5netcdf')
+    template_path : Path, optional
+        Path to a template NetCDF file to extract grid from
     
     Returns
     -------
@@ -494,7 +509,10 @@ def generate_forecast_cycle(
     print(f"  Variables: {variables}")
     print(f"  Steps: {len(forecast_hours)} (0h to {forecast_hours[-1]}h)")
     print(f"  Ensemble members: {num_ensemble_members}")
-    print(f"  Grid: {lat_size} x {lon_size}")
+    if template_path:
+        print(f"  Grid: from template {template_path}")
+    else:
+        print(f"  Grid: {lat_size} x {lon_size}")
     print(f"  Reference time: {reference_time}")
     print()
     
@@ -510,6 +528,7 @@ def generate_forecast_cycle(
                 lat_size=lat_size,
                 lon_size=lon_size,
                 netcdf_engine=netcdf_engine,
+                template_path=template_path,
             )
             generated_files[variable].append(output_path)
             file_count += 1
@@ -542,6 +561,7 @@ Forecast Step Structure:
 Examples:
   %(prog)s output_dir/                              # All 4 variables, all 145 steps (GRIB)
   %(prog)s output_dir/ --format netcdf             # Output as NetCDF instead
+  %(prog)s output_dir/ --template data/sample.nc   # Use grid from template file
   %(prog)s output_dir/ --variables t2m u10         # Only temperature and u-wind
   %(prog)s output_dir/ --max-steps 10              # Only first 10 steps (for testing)
   %(prog)s output_dir/ --members 10 --lat 91 --lon 180  # Smaller grid for testing
@@ -551,6 +571,12 @@ Examples:
         "output_dir",
         type=str,
         help="Directory where mock files will be saved",
+    )
+    parser.add_argument(
+        "--template",
+        type=str,
+        default=None,
+        help="Path to a template NetCDF file to extract grid coordinates from",
     )
     parser.add_argument(
         "--format",
@@ -614,6 +640,11 @@ Examples:
         if reference_time.tzinfo is None:
             reference_time = reference_time.replace(tzinfo=timezone.utc)
     
+    # Parse template path if provided
+    template_path = Path(args.template) if args.template else None
+    if template_path and not template_path.exists():
+        parser.error(f"Template file not found: {template_path}")
+    
     # Generate files
     output_dir = Path(args.output_dir)
     
@@ -627,6 +658,7 @@ Examples:
         lon_size=args.lon,
         max_steps=args.max_steps,
         netcdf_engine=args.engine,
+        template_path=template_path,
     )
     
     # Summary
