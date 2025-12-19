@@ -13,6 +13,7 @@ Key features:
 """
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 import zarr
 from datetime import datetime, timedelta
