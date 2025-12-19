@@ -116,7 +116,7 @@ if grib_paths:
 
 if grib_paths:
     # Convert DBFS path to local path for eccodes
-    test_file = grib_paths[0].replace("dbfs:", "/dbfs")
+    test_file = grib_paths[0].replace("dbfs:", "")
     
     print(f"Extracting metadata from: {test_file}")
     
@@ -148,7 +148,7 @@ else:
 # COMMAND ----------
 
 if grib_paths:
-    test_file = grib_paths[0].replace("dbfs:", "/dbfs")
+    test_file = grib_paths[0].replace("dbfs:", "")
     
     print(f"Writing single file: {test_file}")
     print(f"Target store: {LOCAL_ZARR_PATH}")
