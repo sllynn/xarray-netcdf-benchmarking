@@ -220,13 +220,23 @@ class TokenManager:
             azure_url = f"https://{storage_account}.blob.core.windows.net/{container}/{blob_path}"
             
             # Parse expiration time from response
-            expiration = creds.expiration_time
-            if expiration is None:
+            # expiration_time can be: None, int (Unix timestamp ms), str (ISO format), or datetime
+            expiration_raw = creds.expiration_time
+            if expiration_raw is None:
                 # Fallback: assume 1 hour from now
                 expiration = datetime.now(timezone.utc) + timedelta(hours=1)
-            elif isinstance(expiration, str):
+            elif isinstance(expiration_raw, int):
+                # Unix timestamp in milliseconds
+                expiration = datetime.fromtimestamp(expiration_raw / 1000, tz=timezone.utc)
+            elif isinstance(expiration_raw, str):
                 # Parse ISO format string
-                expiration = datetime.fromisoformat(expiration.replace('Z', '+00:00'))
+                expiration = datetime.fromisoformat(expiration_raw.replace('Z', '+00:00'))
+            elif isinstance(expiration_raw, datetime):
+                expiration = expiration_raw
+            else:
+                # Unknown type, fallback
+                logger.warning(f"Unknown expiration_time type: {type(expiration_raw)}, using 1 hour default")
+                expiration = datetime.now(timezone.utc) + timedelta(hours=1)
             
             self._token_info = TokenInfo(
                 token=sas_token,
