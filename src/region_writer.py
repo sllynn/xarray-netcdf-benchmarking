@@ -45,6 +45,53 @@ logger = logging.getLogger(__name__)
 # Default staging directory on Databricks (local SSD)
 DEFAULT_STAGING_DIR = "/local_disk0/grib_staging"
 
+# Fallback mapping from GRIB shortName to CF variable names
+# Used only when cfVarName is not available in the GRIB file
+# GRIB uses names like "2t", "10u", "10v" while CF conventions use "t2m", "u10", "v10"
+# Reference: ECMWF Parameter Database https://confluence.ecmwf.int/display/ECC/GRIB+Parameters+Database
+GRIB_TO_CF_VARIABLE_MAP = {
+    "2t": "t2m",      # 2-metre temperature
+    "10u": "u10",     # 10-metre U wind component  
+    "10v": "v10",     # 10-metre V wind component
+    "sp": "sp",       # Surface pressure (same in both)
+    "msl": "msl",     # Mean sea level pressure
+    "tp": "tp",       # Total precipitation
+    "tcc": "tcc",     # Total cloud cover
+    "skt": "skt",     # Skin temperature
+    "stl1": "stl1",   # Soil temperature level 1
+    # Add more mappings as needed
+}
+
+
+def get_cf_varname_from_grib(gid: int) -> str:
+    """Extract the CF variable name from a GRIB message handle.
+    
+    First tries to read cfVarName directly from the GRIB file (set by eccodes
+    based on ECMWF parameter definitions). Falls back to a hardcoded mapping
+    if cfVarName is not available.
+    
+    Parameters
+    ----------
+    gid : int
+        eccodes GRIB message handle.
+    
+    Returns
+    -------
+    str
+        CF/Zarr variable name (e.g., "t2m", "u10", "v10").
+    """
+    # First try to get cfVarName directly from eccodes
+    try:
+        cf_var_name = eccodes.codes_get(gid, "cfVarName")
+        if cf_var_name and cf_var_name != "unknown":
+            return cf_var_name
+    except eccodes.CodesInternalError:
+        pass
+    
+    # Fall back to shortName with manual mapping
+    short_name = eccodes.codes_get(gid, "shortName")
+    return GRIB_TO_CF_VARIABLE_MAP.get(short_name, short_name)
+
 
 def stage_file_locally(
     remote_path: str,
@@ -159,8 +206,8 @@ def extract_grib_metadata(grib_path: str) -> GribMetadata:
             raise ValueError(f"Could not read GRIB message from {grib_path}")
         
         try:
-            # Extract variable name
-            short_name = eccodes.codes_get(gid, "shortName")
+            # Extract variable name using CF convention (from cfVarName or fallback mapping)
+            var_name = get_cf_varname_from_grib(gid)
             
             # Extract time information
             data_date = eccodes.codes_get(gid, "dataDate")  # YYYYMMDD
@@ -193,7 +240,7 @@ def extract_grib_metadata(grib_path: str) -> GribMetadata:
             n_lon = eccodes.codes_get(gid, "Ni")
             
             return GribMetadata(
-                variable=short_name,
+                variable=var_name,
                 forecast_hour=int(step),
                 reference_time=reference_time,
                 valid_time=valid_time,
@@ -246,7 +293,7 @@ def read_grib_data(grib_path: str) -> tuple[np.ndarray, GribMetadata]:
                 
                 # Extract metadata from first message
                 if metadata is None:
-                    short_name = eccodes.codes_get(gid, "shortName")
+                    var_name = get_cf_varname_from_grib(gid)
                     data_date = eccodes.codes_get(gid, "dataDate")
                     data_time = eccodes.codes_get(gid, "dataTime")
                     step = eccodes.codes_get(gid, "step")
@@ -260,7 +307,7 @@ def read_grib_data(grib_path: str) -> tuple[np.ndarray, GribMetadata]:
                     valid_time = reference_time + timedelta(hours=int(step))
                     
                     metadata = GribMetadata(
-                        variable=short_name,
+                        variable=var_name,
                         forecast_hour=int(step),
                         reference_time=reference_time,
                         valid_time=valid_time,
@@ -298,6 +345,7 @@ def read_grib_with_cfgrib(grib_path: str) -> tuple[np.ndarray, GribMetadata]:
     ds = xr.open_dataset(grib_path, engine='cfgrib')
     
     # Get the data variable (should be only one)
+    # cfgrib returns CF convention names directly (t2m, u10, v10, etc.)
     var_name = list(ds.data_vars)[0]
     data_var = ds[var_name]
     
