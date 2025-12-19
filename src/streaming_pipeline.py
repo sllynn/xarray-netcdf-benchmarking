@@ -152,7 +152,7 @@ def create_streaming_pipeline(
         
         # Collect file paths to driver
         # AutoLoader provides 'path' column with binary file format
-        file_paths = [row.path for row in batch_df.select('path').collect()]
+        file_paths = [row.path.replace("dbfs:", "") for row in batch_df.select('path').collect()]
         
         if not file_paths:
             logger.info(f"Batch {batch_id}: No files to process")
