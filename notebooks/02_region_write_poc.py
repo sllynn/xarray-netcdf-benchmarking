@@ -152,6 +152,7 @@ if grib_paths:
     
     print(f"Writing single file: {test_file}")
     print(f"Target store: {LOCAL_ZARR_PATH}")
+    print(f"Local staging: enabled")
     
     start_time = time.time()
     
@@ -159,6 +160,7 @@ if grib_paths:
         grib_path=test_file,
         zarr_store_path=LOCAL_ZARR_PATH,
         hour_to_index=hour_to_index,
+        stage_locally=True,  # Copy to local SSD before reading
     )
     
     elapsed = time.time() - start_time
@@ -180,6 +182,7 @@ if grib_paths:
 # COMMAND ----------
 
 # Test parallel writes with multiple files
+# Key optimization: stage files to local SSD first for faster reads
 batch_size = min(MAX_WORKERS, len(grib_paths))
 
 if batch_size > 0:
@@ -187,6 +190,7 @@ if batch_size > 0:
     
     print(f"Testing parallel write with {batch_size} files")
     print(f"Workers: {MAX_WORKERS}")
+    print(f"Local staging: enabled (files copied to /local_disk0/grib_staging)")
     
     start_time = time.time()
     
@@ -195,6 +199,8 @@ if batch_size > 0:
         zarr_store_path=LOCAL_ZARR_PATH,
         hour_to_index=hour_to_index,
         max_workers=MAX_WORKERS,
+        stage_locally=True,  # Copy files to local SSD before reading
+        batch_stage=True,    # Stage all files first, then process
     )
     
     elapsed = time.time() - start_time
@@ -212,6 +218,59 @@ if batch_size > 0:
         for r in results:
             if not r.success:
                 print(f"  {r.grib_path}: {r.error}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Compare: With vs Without Local Staging
+# MAGIC
+# MAGIC This cell demonstrates the performance difference between reading
+# MAGIC directly from cloud storage vs staging to local SSD first.
+
+# COMMAND ----------
+
+# Compare with and without local staging (run a smaller batch for comparison)
+if len(grib_paths) >= 8:
+    comparison_batch = [p.replace("dbfs:", "") for p in grib_paths[:8]]
+    
+    print("=" * 60)
+    print("PERFORMANCE COMPARISON: Local Staging")
+    print("=" * 60)
+    
+    # Test WITHOUT local staging (direct from cloud)
+    print("\n1. WITHOUT local staging (reading directly from Volumes):")
+    start_time = time.time()
+    results_no_stage = write_grib_batch_parallel(
+        grib_paths=comparison_batch,
+        zarr_store_path=LOCAL_ZARR_PATH,
+        hour_to_index=hour_to_index,
+        max_workers=8,
+        stage_locally=False,
+    )
+    elapsed_no_stage = time.time() - start_time
+    print(f"   Time: {elapsed_no_stage:.2f}s")
+    print(f"   Throughput: {len(comparison_batch) / elapsed_no_stage:.1f} files/s")
+    
+    # Test WITH local staging
+    print("\n2. WITH local staging (copy to /local_disk0 first):")
+    start_time = time.time()
+    results_with_stage = write_grib_batch_parallel(
+        grib_paths=comparison_batch,
+        zarr_store_path=LOCAL_ZARR_PATH,
+        hour_to_index=hour_to_index,
+        max_workers=8,
+        stage_locally=True,
+        batch_stage=True,
+    )
+    elapsed_with_stage = time.time() - start_time
+    print(f"   Time: {elapsed_with_stage:.2f}s")
+    print(f"   Throughput: {len(comparison_batch) / elapsed_with_stage:.1f} files/s")
+    
+    # Summary
+    speedup = elapsed_no_stage / elapsed_with_stage if elapsed_with_stage > 0 else 0
+    print(f"\n{'=' * 60}")
+    print(f"SPEEDUP with local staging: {speedup:.1f}x")
+    print(f"{'=' * 60}")
 
 # COMMAND ----------
 

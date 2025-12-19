@@ -10,12 +10,16 @@ Key features:
 - Map forecast hour to step index using the non-uniform step lookup
 - Perform atomic region write using xarray.to_zarr(region=...)
 - Handle concurrent writes safely (one file = one chunk)
+- Stage files to local SSD for faster reads from cloud storage
 """
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 import zarr
+import shutil
+import tempfile
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Union
@@ -37,6 +41,64 @@ except ImportError:
 from .zarr_init import generate_forecast_steps, build_hour_to_index_map
 
 logger = logging.getLogger(__name__)
+
+# Default staging directory on Databricks (local SSD)
+DEFAULT_STAGING_DIR = "/local_disk0/grib_staging"
+
+
+def stage_file_locally(
+    remote_path: str,
+    staging_dir: str = DEFAULT_STAGING_DIR,
+) -> str:
+    """Copy a file from remote/cloud storage to local SSD for faster reading.
+    
+    Parameters
+    ----------
+    remote_path : str
+        Path to the file (can be DBFS, Volumes, or cloud storage path).
+    staging_dir : str
+        Local directory to copy files to (default: /local_disk0/grib_staging).
+    
+    Returns
+    -------
+    str
+        Path to the local copy of the file.
+    """
+    remote_path = str(remote_path)
+    
+    # Volumes are accessed directly at /Volumes/... (FUSE mount)
+    # DBFS is accessed at /dbfs/... (legacy FUSE mount)
+    # Both can be slow for random I/O, so we copy to local SSD
+    fuse_path = remote_path
+    
+    # Create staging directory
+    os.makedirs(staging_dir, exist_ok=True)
+    
+    # Generate local path
+    filename = Path(remote_path).name
+    local_path = os.path.join(staging_dir, filename)
+    
+    # Copy to local
+    shutil.copy2(fuse_path, local_path)
+    
+    return local_path
+
+
+def cleanup_staged_file(local_path: str, staging_dir: str = DEFAULT_STAGING_DIR) -> None:
+    """Remove a staged file if it's in the staging directory.
+    
+    Parameters
+    ----------
+    local_path : str
+        Path to the local file.
+    staging_dir : str
+        The staging directory (only files here will be deleted).
+    """
+    if local_path.startswith(staging_dir):
+        try:
+            os.remove(local_path)
+        except OSError:
+            pass  # File may already be deleted
 
 
 @dataclass
@@ -267,6 +329,9 @@ def write_grib_to_zarr_region(
     hour_to_index: Optional[dict[int, int]] = None,
     expected_reference_time: Optional[datetime] = None,
     use_cfgrib: bool = False,
+    stage_locally: bool = True,
+    staging_dir: str = DEFAULT_STAGING_DIR,
+    cleanup_staged: bool = True,
 ) -> WriteResult:
     """Write GRIB file data to a specific region in the Zarr store.
     
@@ -288,6 +353,13 @@ def write_grib_to_zarr_region(
         matches this reference time.
     use_cfgrib : bool
         Use cfgrib instead of eccodes for reading (default: False).
+    stage_locally : bool
+        Copy file to local SSD before reading (default: True).
+        Significantly speeds up reads from cloud storage.
+    staging_dir : str
+        Directory for local staging (default: /local_disk0/grib_staging).
+    cleanup_staged : bool
+        Remove staged file after processing (default: True).
     
     Returns
     -------
@@ -307,8 +379,9 @@ def write_grib_to_zarr_region(
     import time
     start_time = time.perf_counter()
     
-    grib_path = str(grib_path)
+    original_grib_path = str(grib_path)
     zarr_store_path = str(zarr_store_path)
+    local_grib_path = None
     
     # Build default hour-to-index mapping if not provided
     if hour_to_index is None:
@@ -316,6 +389,13 @@ def write_grib_to_zarr_region(
         hour_to_index = build_hour_to_index_map(forecast_steps)
     
     try:
+        # Stage file locally for faster reading
+        if stage_locally:
+            local_grib_path = stage_file_locally(original_grib_path, staging_dir)
+            grib_path = local_grib_path
+        else:
+            grib_path = original_grib_path
+        
         # Read GRIB data
         if use_cfgrib:
             data, metadata = read_grib_with_cfgrib(grib_path)
@@ -393,9 +473,13 @@ def write_grib_to_zarr_region(
         
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         
+        # Cleanup staged file
+        if cleanup_staged and local_grib_path:
+            cleanup_staged_file(local_grib_path, staging_dir)
+        
         return WriteResult(
             success=True,
-            grib_path=grib_path,
+            grib_path=original_grib_path,
             variable=var_name,
             step_index=step_index,
             ensemble_slice=(0, actual_ensemble),
@@ -404,11 +488,15 @@ def write_grib_to_zarr_region(
         
     except Exception as e:
         elapsed_ms = (time.perf_counter() - start_time) * 1000
-        logger.error(f"Failed to write {grib_path}: {e}")
+        logger.error(f"Failed to write {original_grib_path}: {e}")
+        
+        # Cleanup staged file even on error
+        if cleanup_staged and local_grib_path:
+            cleanup_staged_file(local_grib_path, staging_dir)
         
         return WriteResult(
             success=False,
-            grib_path=grib_path,
+            grib_path=original_grib_path,
             variable=getattr(metadata, 'variable', 'unknown') if 'metadata' in locals() else 'unknown',
             step_index=-1,
             ensemble_slice=(0, 0),
@@ -417,16 +505,72 @@ def write_grib_to_zarr_region(
         )
 
 
+def stage_files_batch(
+    grib_paths: list[str],
+    staging_dir: str = DEFAULT_STAGING_DIR,
+    max_workers: int = 32,
+) -> dict[str, str]:
+    """Stage multiple files to local storage in parallel.
+    
+    Parameters
+    ----------
+    grib_paths : list[str]
+        List of GRIB file paths.
+    staging_dir : str
+        Local directory to copy files to.
+    max_workers : int
+        Maximum number of parallel copy operations.
+    
+    Returns
+    -------
+    dict[str, str]
+        Mapping from original path to local staged path.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
+    os.makedirs(staging_dir, exist_ok=True)
+    staged_paths = {}
+    
+    def stage_one(path: str) -> tuple[str, str]:
+        local_path = stage_file_locally(path, staging_dir)
+        return (path, local_path)
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(stage_one, p): p for p in grib_paths}
+        for future in as_completed(futures):
+            orig_path, local_path = future.result()
+            staged_paths[orig_path] = local_path
+    
+    return staged_paths
+
+
+def cleanup_staging_dir(staging_dir: str = DEFAULT_STAGING_DIR) -> None:
+    """Remove all files from the staging directory.
+    
+    Parameters
+    ----------
+    staging_dir : str
+        The staging directory to clean up.
+    """
+    if os.path.exists(staging_dir):
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        os.makedirs(staging_dir, exist_ok=True)
+
+
 def write_grib_batch_parallel(
     grib_paths: list[str],
     zarr_store_path: str,
     hour_to_index: Optional[dict[int, int]] = None,
     max_workers: int = 32,
     use_cfgrib: bool = False,
+    stage_locally: bool = True,
+    staging_dir: str = DEFAULT_STAGING_DIR,
+    batch_stage: bool = True,
 ) -> list[WriteResult]:
     """Write multiple GRIB files to Zarr in parallel.
     
-    Uses ThreadPoolExecutor to saturate I/O bandwidth.
+    Uses ThreadPoolExecutor to saturate I/O bandwidth. Optionally stages
+    files to local SSD first for faster reads from cloud storage.
     
     Parameters
     ----------
@@ -440,6 +584,13 @@ def write_grib_batch_parallel(
         Maximum number of parallel workers (default: 32).
     use_cfgrib : bool
         Use cfgrib instead of eccodes for reading.
+    stage_locally : bool
+        Copy files to local SSD before reading (default: True).
+    staging_dir : str
+        Directory for local staging (default: /local_disk0/grib_staging).
+    batch_stage : bool
+        If True, stage all files first then process. If False, stage
+        and process each file individually (default: True).
     
     Returns
     -------
@@ -455,36 +606,70 @@ def write_grib_batch_parallel(
     
     results = []
     start_time = time.perf_counter()
+    staged_paths = {}
     
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
-                write_grib_to_zarr_region,
-                grib_path,
-                zarr_store_path,
-                hour_to_index,
-                None,
-                use_cfgrib,
-            ): grib_path
-            for grib_path in grib_paths
-        }
+    try:
+        # Stage all files first if batch_stage is enabled
+        if stage_locally and batch_stage:
+            logger.info(f"Staging {len(grib_paths)} files to {staging_dir}...")
+            stage_start = time.perf_counter()
+            staged_paths = stage_files_batch(grib_paths, staging_dir, max_workers)
+            stage_elapsed = (time.perf_counter() - stage_start) * 1000
+            logger.info(f"Staging complete in {stage_elapsed:.1f}ms")
         
-        for future in as_completed(futures):
-            grib_path = futures[future]
-            try:
-                result = future.result()
-                results.append(result)
-            except Exception as e:
-                logger.error(f"Unexpected error processing {grib_path}: {e}")
-                results.append(WriteResult(
-                    success=False,
-                    grib_path=grib_path,
-                    variable='unknown',
-                    step_index=-1,
-                    ensemble_slice=(0, 0),
-                    elapsed_ms=0,
-                    error=str(e),
-                ))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {}
+            for grib_path in grib_paths:
+                # Use staged path if available
+                process_path = staged_paths.get(grib_path, grib_path)
+                
+                # Disable per-file staging if we already batch-staged
+                per_file_stage = stage_locally and not batch_stage
+                
+                future = executor.submit(
+                    write_grib_to_zarr_region,
+                    process_path if batch_stage else grib_path,
+                    zarr_store_path,
+                    hour_to_index,
+                    None,  # expected_reference_time
+                    use_cfgrib,
+                    per_file_stage,  # stage_locally
+                    staging_dir,
+                    not batch_stage,  # cleanup_staged (don't cleanup if batch-staged)
+                )
+                futures[future] = grib_path  # Store original path
+            
+            for future in as_completed(futures):
+                original_path = futures[future]
+                try:
+                    result = future.result()
+                    # Fix the path in result to be original path
+                    result = WriteResult(
+                        success=result.success,
+                        grib_path=original_path,
+                        variable=result.variable,
+                        step_index=result.step_index,
+                        ensemble_slice=result.ensemble_slice,
+                        elapsed_ms=result.elapsed_ms,
+                        error=result.error,
+                    )
+                    results.append(result)
+                except Exception as e:
+                    logger.error(f"Unexpected error processing {original_path}: {e}")
+                    results.append(WriteResult(
+                        success=False,
+                        grib_path=original_path,
+                        variable='unknown',
+                        step_index=-1,
+                        ensemble_slice=(0, 0),
+                        elapsed_ms=0,
+                        error=str(e),
+                    ))
+        
+    finally:
+        # Cleanup staging directory if we batch-staged
+        if stage_locally and batch_stage and staged_paths:
+            cleanup_staging_dir(staging_dir)
     
     elapsed_total = (time.perf_counter() - start_time) * 1000
     successful = sum(1 for r in results if r.success)

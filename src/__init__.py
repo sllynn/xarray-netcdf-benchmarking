@@ -22,8 +22,12 @@ from .region_writer import (
     write_grib_batch_parallel,
     extract_grib_metadata,
     read_grib_data,
+    stage_file_locally,
+    stage_files_batch,
+    cleanup_staging_dir,
     GribMetadata,
     WriteResult,
+    DEFAULT_STAGING_DIR,
 )
 
 from .cloud_sync import (
@@ -54,8 +58,12 @@ __all__ = [
     "write_grib_batch_parallel",
     "extract_grib_metadata",
     "read_grib_data",
+    "stage_file_locally",
+    "stage_files_batch",
+    "cleanup_staging_dir",
     "GribMetadata",
     "WriteResult",
+    "DEFAULT_STAGING_DIR",
     # Cloud sync
     "TokenManager",
     "CloudSyncer",
