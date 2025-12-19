@@ -320,13 +320,13 @@ if results:
         max_time = max(write_times)
         min_time = min(write_times)
         
-        print(f"Write time statistics:")
-        print(f"  Average: {avg_time:.1f}ms")
-        print(f"  Min: {min_time:.1f}ms")
-        print(f"  Max: {max_time:.1f}ms")
+        print(f"Write time statistics (per file, n={len(write_times)}):")
+        print(f"  Average: {avg_time:.1f}ms/file")
+        print(f"  Min: {min_time:.1f}ms/file")
+        print(f"  Max: {max_time:.1f}ms/file")
         
         if avg_time < target_time_ms:
-            print(f"\n✓ PASS: Average write time {avg_time:.1f}ms < {target_time_ms}ms target")
+            print(f"\n✓ PASS: Average write time {avg_time:.1f}ms/file < {target_time_ms}ms target")
         else:
-            print(f"\n✗ FAIL: Average write time {avg_time:.1f}ms >= {target_time_ms}ms target")
+            print(f"\n✗ FAIL: Average write time {avg_time:.1f}ms/file >= {target_time_ms}ms target")
 
