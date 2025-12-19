@@ -131,7 +131,7 @@ def create_streaming_pipeline(
     
     # Initialize cloud syncer if not provided
     if cloud_syncer is None and config.sync_after_each_batch:
-        cloud_syncer = CloudSyncer(config.cloud_destination)
+        cloud_syncer = CloudSyncer.from_volume_path(config.cloud_destination)
     
     logger.info(f"Creating streaming pipeline:")
     logger.info(f"  Landing zone: {config.landing_zone}")
@@ -344,7 +344,7 @@ def run_batch_processing(
     # Sync to cloud storage
     sync_time = 0
     if config.sync_after_each_batch and successful > 0:
-        syncer = CloudSyncer(config.cloud_destination)
+        syncer = CloudSyncer.from_volume_path(config.cloud_destination)
         sync_start = time.perf_counter()
         sync_result = syncer.sync_zarr_chunks(config.zarr_store_path)
         sync_time = (time.perf_counter() - sync_start) * 1000

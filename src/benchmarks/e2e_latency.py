@@ -348,7 +348,7 @@ def benchmark_e2e_latency(
         from ..cloud_sync import CloudSyncer
         
         sync_start = time.perf_counter() * 1000
-        syncer = CloudSyncer(config.cloud_destination)
+        syncer = CloudSyncer.from_volume_path(config.cloud_destination)
         sync_result = syncer.sync_zarr_chunks(config.zarr_store_path)
         sync_time = time.perf_counter() * 1000 - sync_start
         

@@ -16,11 +16,11 @@ import os
 import subprocess
 import shutil
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
-from urllib.parse import urlparse, urlencode
+from urllib.parse import urlparse
 import time
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,8 @@ class TokenInfo:
     token: str
     expiration: datetime
     azure_url: str
+    storage_account: str
+    container: str
 
 
 class TokenManager:
@@ -56,32 +58,71 @@ class TokenManager:
     
     Parameters
     ----------
-    volume_path : str
-        Unity Catalog Volume path (e.g., '/Volumes/catalog/schema/volume_name').
+    volume_name : str
+        Unity Catalog Volume full name (e.g., 'catalog.schema.volume_name').
+    subpath : str, optional
+        Subpath within the volume (e.g., 'forecast.zarr').
     refresh_buffer_minutes : int
         Minutes before expiration to trigger refresh (default: 5).
-    token_duration_hours : int
-        Requested token duration in hours (default: 1).
     
     Examples
     --------
-    >>> token_manager = TokenManager('/Volumes/my_catalog/my_schema/silver')
+    >>> token_manager = TokenManager('my_catalog.my_schema.silver', subpath='forecast.zarr')
     >>> sas_url = token_manager.get_sas_url()
     >>> subprocess.run(['azcopy', 'sync', source, sas_url])
     """
     
     def __init__(
         self,
-        volume_path: str,
+        volume_name: str,
+        subpath: Optional[str] = None,
         refresh_buffer_minutes: int = 5,
-        token_duration_hours: int = 1,
     ):
-        self.volume_path = volume_path
+        self.volume_name = volume_name
+        self.subpath = subpath
         self.refresh_buffer_minutes = refresh_buffer_minutes
-        self.token_duration_hours = token_duration_hours
         
         self._token_info: Optional[TokenInfo] = None
         self._workspace_client = None
+        self._volume_storage_location: Optional[str] = None
+    
+    @classmethod
+    def from_volume_path(
+        cls,
+        volume_path: str,
+        refresh_buffer_minutes: int = 5,
+    ) -> "TokenManager":
+        """Create TokenManager from a Volume path.
+        
+        Parameters
+        ----------
+        volume_path : str
+            Volume path like '/Volumes/catalog/schema/volume_name/subpath'.
+        refresh_buffer_minutes : int
+            Minutes before expiration to trigger refresh.
+        
+        Returns
+        -------
+        TokenManager
+            Configured token manager.
+        """
+        # Parse /Volumes/catalog/schema/volume_name/subpath
+        parts = volume_path.strip('/').split('/')
+        if len(parts) < 4 or parts[0].lower() != 'volumes':
+            raise ValueError(
+                f"Invalid volume path: {volume_path}. "
+                "Expected format: /Volumes/catalog/schema/volume_name[/subpath]"
+            )
+        
+        catalog, schema, volume = parts[1], parts[2], parts[3]
+        volume_name = f"{catalog}.{schema}.{volume}"
+        subpath = '/'.join(parts[4:]) if len(parts) > 4 else None
+        
+        return cls(
+            volume_name=volume_name,
+            subpath=subpath,
+            refresh_buffer_minutes=refresh_buffer_minutes,
+        )
     
     def _get_workspace_client(self):
         """Get or create Databricks workspace client."""
@@ -96,53 +137,103 @@ class TokenManager:
                 )
         return self._workspace_client
     
+    def _get_volume_storage_location(self) -> str:
+        """Get the underlying storage location for the Volume."""
+        if self._volume_storage_location is None:
+            w = self._get_workspace_client()
+            volume_info = w.volumes.read(self.volume_name)
+            self._volume_storage_location = volume_info.storage_location
+            logger.info(f"Volume {self.volume_name} -> {self._volume_storage_location}")
+        return self._volume_storage_location
+    
+    def _parse_storage_url(self, storage_url: str) -> tuple[str, str, str]:
+        """Parse abfss:// URL into storage account, container, and path.
+        
+        Parameters
+        ----------
+        storage_url : str
+            URL like 'abfss://container@account.dfs.core.windows.net/path'.
+        
+        Returns
+        -------
+        tuple[str, str, str]
+            (storage_account, container, path)
+        """
+        # abfss://container@account.dfs.core.windows.net/path
+        parsed = urlparse(storage_url)
+        
+        # Host is container@account.dfs.core.windows.net
+        container, host_rest = parsed.netloc.split('@', 1)
+        storage_account = host_rest.split('.')[0]
+        path = parsed.path.lstrip('/')
+        
+        return storage_account, container, path
+    
     def _needs_refresh(self) -> bool:
         """Check if token needs to be refreshed."""
         if self._token_info is None:
             return True
         
         buffer = timedelta(minutes=self.refresh_buffer_minutes)
-        return datetime.utcnow() > (self._token_info.expiration - buffer)
+        now = datetime.now(timezone.utc)
+        
+        # Handle both timezone-aware and naive expiration times
+        expiration = self._token_info.expiration
+        if expiration.tzinfo is None:
+            expiration = expiration.replace(tzinfo=timezone.utc)
+        
+        return now > (expiration - buffer)
     
     def _refresh_token(self) -> None:
         """Generate a new SAS token using Databricks SDK."""
-        logger.info(f"Refreshing SAS token for {self.volume_path}")
+        logger.info(f"Refreshing SAS token for volume {self.volume_name}")
         
         try:
+            from databricks.sdk.service.catalog import PathOperation
+            
             w = self._get_workspace_client()
             
-            # Get temporary credentials for the volume path
-            # This uses the Unity Catalog temporary_path_credentials API
-            from databricks.sdk.service.catalog import (
-                GenerateTemporaryPathCredentialRequest,
-                PathOperation,
-            )
+            # Get the storage location from the Volume metadata
+            volume_root_url = self._get_volume_storage_location()
             
-            response = w.path_credentials.generate_temporary_path_credential(
-                GenerateTemporaryPathCredentialRequest(
-                    path=self.volume_path,
-                    operation=PathOperation.WRITE,
-                )
+            # Generate temporary write credentials for the Volume
+            creds = w.temporary_path_credentials.generate_temporary_path_credentials(
+                url=volume_root_url,
+                operation=PathOperation.PATH_READ_WRITE,
             )
             
             # Extract Azure SAS token from response
-            azure_credentials = response.azure_user_delegation_sas
-            if azure_credentials is None:
+            if creds.azure_user_delegation_sas is None:
                 raise ValueError("No Azure credentials returned from Databricks")
             
-            sas_token = azure_credentials.sas_token
+            sas_token = creds.azure_user_delegation_sas.sas_token
             
-            # Parse the destination URL
-            # Volume paths map to underlying Azure Blob Storage URLs
-            storage_url = self._get_storage_url()
+            # Parse the storage URL
+            storage_account, container, base_path = self._parse_storage_url(volume_root_url)
             
-            # Calculate expiration
-            expiration = datetime.utcnow() + timedelta(hours=self.token_duration_hours)
+            # Build the Azure Blob URL (https:// format for azcopy)
+            if self.subpath:
+                blob_path = f"{base_path}/{self.subpath}".strip('/')
+            else:
+                blob_path = base_path
+            
+            azure_url = f"https://{storage_account}.blob.core.windows.net/{container}/{blob_path}"
+            
+            # Parse expiration time from response
+            expiration = creds.expiration_time
+            if expiration is None:
+                # Fallback: assume 1 hour from now
+                expiration = datetime.now(timezone.utc) + timedelta(hours=1)
+            elif isinstance(expiration, str):
+                # Parse ISO format string
+                expiration = datetime.fromisoformat(expiration.replace('Z', '+00:00'))
             
             self._token_info = TokenInfo(
                 token=sas_token,
                 expiration=expiration,
-                azure_url=storage_url,
+                azure_url=azure_url,
+                storage_account=storage_account,
+                container=container,
             )
             
             logger.info(f"Token refreshed, expires at {expiration}")
@@ -150,34 +241,6 @@ class TokenManager:
         except Exception as e:
             logger.error(f"Failed to refresh token: {e}")
             raise
-    
-    def _get_storage_url(self) -> str:
-        """Get the underlying Azure Blob Storage URL for the volume.
-        
-        In a real implementation, this would query the Unity Catalog to
-        get the storage location mapping. For now, we construct it from
-        environment or configuration.
-        """
-        # Try to get from environment (set in Databricks)
-        storage_account = os.environ.get('AZURE_STORAGE_ACCOUNT')
-        container = os.environ.get('AZURE_STORAGE_CONTAINER')
-        
-        if storage_account and container:
-            # Parse volume path to get subdirectory
-            parts = self.volume_path.strip('/').split('/')
-            if len(parts) >= 4 and parts[0].lower() == 'volumes':
-                subpath = '/'.join(parts[3:])  # Skip Volumes/catalog/schema
-            else:
-                subpath = parts[-1] if parts else ''
-            
-            return f"https://{storage_account}.blob.core.windows.net/{container}/{subpath}"
-        
-        # Fallback: assume DBFS-style URL conversion
-        logger.warning(
-            "Storage URL not configured. Set AZURE_STORAGE_ACCOUNT and "
-            "AZURE_STORAGE_CONTAINER environment variables."
-        )
-        return f"abfss://container@account.dfs.core.windows.net{self.volume_path}"
     
     def get_sas_url(self) -> str:
         """Get destination URL with valid SAS token.
@@ -192,10 +255,32 @@ class TokenManager:
         
         return f"{self._token_info.azure_url}?{self._token_info.token}"
     
+    def get_azure_url(self) -> str:
+        """Get the Azure Blob URL without the SAS token.
+        
+        Returns
+        -------
+        str
+            Azure Blob URL (useful for logging without exposing token).
+        """
+        if self._token_info is None:
+            self._refresh_token()
+        return self._token_info.azure_url
+    
     @property
     def token_expiration(self) -> Optional[datetime]:
         """Get current token expiration time."""
         return self._token_info.expiration if self._token_info else None
+    
+    @property
+    def storage_account(self) -> Optional[str]:
+        """Get the storage account name."""
+        return self._token_info.storage_account if self._token_info else None
+    
+    @property
+    def container(self) -> Optional[str]:
+        """Get the container name."""
+        return self._token_info.container if self._token_info else None
 
 
 def find_azcopy() -> Optional[str]:
@@ -379,25 +464,75 @@ class CloudSyncer:
     
     Parameters
     ----------
-    volume_path : str
-        Unity Catalog Volume path.
+    volume_name : str
+        Unity Catalog Volume full name (e.g., 'catalog.schema.volume_name').
+    subpath : str, optional
+        Subpath within the volume (e.g., 'forecast.zarr').
     token_manager : TokenManager, optional
         Custom token manager. Created automatically if not provided.
     
     Examples
     --------
-    >>> syncer = CloudSyncer('/Volumes/my_catalog/my_schema/silver')
+    >>> syncer = CloudSyncer('my_catalog.my_schema.silver', subpath='forecast.zarr')
     >>> result = syncer.sync('/local_disk0/forecast.zarr')
     >>> print(f"Synced {result.files_transferred} files in {result.elapsed_seconds:.1f}s")
+    
+    Or create from a Volume path:
+    
+    >>> syncer = CloudSyncer.from_volume_path('/Volumes/catalog/schema/volume/forecast.zarr')
+    >>> result = syncer.sync('/local_disk0/forecast.zarr')
     """
     
     def __init__(
         self,
-        volume_path: str,
+        volume_name: str,
+        subpath: Optional[str] = None,
         token_manager: Optional[TokenManager] = None,
     ):
-        self.volume_path = volume_path
-        self.token_manager = token_manager or TokenManager(volume_path)
+        self.volume_name = volume_name
+        self.subpath = subpath
+        self.token_manager = token_manager or TokenManager(volume_name, subpath=subpath)
+    
+    @classmethod
+    def from_volume_path(
+        cls,
+        volume_path: str,
+        token_manager: Optional[TokenManager] = None,
+    ) -> "CloudSyncer":
+        """Create CloudSyncer from a Volume path.
+        
+        Parameters
+        ----------
+        volume_path : str
+            Volume path like '/Volumes/catalog/schema/volume_name/subpath'.
+        token_manager : TokenManager, optional
+            Custom token manager.
+        
+        Returns
+        -------
+        CloudSyncer
+            Configured syncer.
+        """
+        # Parse /Volumes/catalog/schema/volume_name/subpath
+        parts = volume_path.strip('/').split('/')
+        if len(parts) < 4 or parts[0].lower() != 'volumes':
+            raise ValueError(
+                f"Invalid volume path: {volume_path}. "
+                "Expected format: /Volumes/catalog/schema/volume_name[/subpath]"
+            )
+        
+        catalog, schema, volume = parts[1], parts[2], parts[3]
+        volume_name = f"{catalog}.{schema}.{volume}"
+        subpath = '/'.join(parts[4:]) if len(parts) > 4 else None
+        
+        if token_manager is None:
+            token_manager = TokenManager(volume_name, subpath=subpath)
+        
+        return cls(
+            volume_name=volume_name,
+            subpath=subpath,
+            token_manager=token_manager,
+        )
     
     def sync(
         self,
@@ -552,6 +687,16 @@ if __name__ == "__main__":
     
     # Demo token manager (will fail without Databricks environment)
     print("\nTokenManager demo (requires Databricks environment):")
-    print("  token_manager = TokenManager('/Volumes/catalog/schema/silver')")
+    print("  # Option 1: Using volume name directly")
+    print("  token_manager = TokenManager('catalog.schema.volume', subpath='forecast.zarr')")
     print("  sas_url = token_manager.get_sas_url()")
+    print()
+    print("  # Option 2: Using volume path")
+    print("  token_manager = TokenManager.from_volume_path('/Volumes/catalog/schema/volume/forecast.zarr')")
+    print("  sas_url = token_manager.get_sas_url()")
+    print()
+    print("CloudSyncer demo:")
+    print("  syncer = CloudSyncer.from_volume_path('/Volumes/catalog/schema/volume/forecast.zarr')")
+    print("  result = syncer.sync('/local_disk0/forecast.zarr')")
+    print("  print(f'Synced {result.files_transferred} files in {result.elapsed_seconds:.1f}s')")
 
