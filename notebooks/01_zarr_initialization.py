@@ -53,9 +53,11 @@ LON_SIZE = 720
 # COMMAND ----------
 
 import sys
-# sys.path.insert(0, '/Workspace/Repos/your_user/raster-benchmarking')
+import time
 
-from datetime import datetime
+sys.path.insert(0, '/Workspace/Repos/your_user/raster-benchmarking')
+
+from datetime import datetime, timezone
 from src.zarr_init import (
     initialize_zarr_store,
     generate_forecast_steps,
@@ -96,7 +98,7 @@ print(f"\nLast 10 steps: {steps[-10:]}")
 # COMMAND ----------
 
 # Get current forecast cycle time (rounded to nearest 6 hours)
-now = datetime.utcnow()
+now = datetime.now(timezone.utc)
 cycle_hour = (now.hour // 6) * 6
 reference_time = now.replace(hour=cycle_hour, minute=0, second=0, microsecond=0)
 
@@ -106,8 +108,6 @@ print(f"Variables: {VARIABLES}")
 print(f"Dimensions: (step={len(steps)}, ensemble={ENSEMBLE_MEMBERS}, lat={LAT_SIZE}, lon={LON_SIZE})")
 
 # COMMAND ----------
-
-import time
 
 start_time = time.time()
 
