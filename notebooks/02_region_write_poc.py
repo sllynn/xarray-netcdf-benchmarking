@@ -1,7 +1,7 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # GRIB to Zarr Region Write - Proof of Concept
-# MAGIC 
+# MAGIC
 # MAGIC This notebook demonstrates the core GRIB processing logic:
 # MAGIC - Reading GRIB files with eccodes
 # MAGIC - Mapping forecast hours to step indices
@@ -15,13 +15,29 @@
 
 # COMMAND ----------
 
+# MAGIC %pip install uv
+
+# COMMAND ----------
+
+# MAGIC %sh uv pip install -r ../requirements.lock
+
+# COMMAND ----------
+
+# MAGIC %restart_python
+
+# COMMAND ----------
+
+import os
+
 # Configuration
-CATALOG = "your_catalog"
-SCHEMA = "your_schema"
+CATALOG = "stuart"
+SCHEMA = "lseg"
+LANDING_VOLUME = "netcdf"
 
 # Paths
-LOCAL_ZARR_PATH = "/local_disk0/forecast.zarr"
-GRIB_LANDING_ZONE = f"/Volumes/{CATALOG}/{SCHEMA}/bronze/grib/"
+LOCAL_ZARR_PATH = "/tmp/forecast.zarr"
+GRIB_LANDING_ZONE = f"/Volumes/{CATALOG}/{SCHEMA}/{LANDING_VOLUME}/landing/"
+os.environ["GRIB_LANDING_ZONE"] = GRIB_LANDING_ZONE
 
 # Processing parameters
 MAX_WORKERS = 32  # Match cluster core count
@@ -34,7 +50,7 @@ MAX_WORKERS = 32  # Match cluster core count
 # COMMAND ----------
 
 import sys
-sys.path.insert(0, '/Workspace/Repos/your_user/raster-benchmarking')
+# sys.path.insert(0, '/Workspace/Repos/your_user/raster-benchmarking')
 
 import time
 from pathlib import Path
@@ -53,7 +69,7 @@ from src.region_writer import (
 
 # MAGIC %md
 # MAGIC ## Build Hour-to-Index Mapping
-# MAGIC 
+# MAGIC
 # MAGIC The forecast uses non-uniform time steps, so we need a lookup table
 # MAGIC to map forecast hours to array indices.
 
@@ -74,6 +90,10 @@ for hour in sample_hours:
 
 # MAGIC %md
 # MAGIC ## List Available GRIB Files
+
+# COMMAND ----------
+
+# MAGIC %sh mkdir -p $GRIB_LANDING_ZONE
 
 # COMMAND ----------
 
@@ -225,7 +245,7 @@ ds.close()
 
 # MAGIC %md
 # MAGIC ## Success Criteria Validation
-# MAGIC 
+# MAGIC
 # MAGIC Per the architecture document, single file write should complete in < 500ms.
 
 # COMMAND ----------
