@@ -1,7 +1,7 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # Streaming Pipeline with AutoLoader
-# MAGIC 
+# MAGIC
 # MAGIC This notebook implements the full streaming ingestion pipeline:
 # MAGIC - AutoLoader monitors the landing zone for new GRIB files
 # MAGIC - foreachBatch processes files in parallel using ThreadPoolExecutor
@@ -15,15 +15,28 @@
 
 # COMMAND ----------
 
+# MAGIC %pip install uv
+
+# COMMAND ----------
+
+# MAGIC %sh uv pip install -r ../requirements.lock
+
+# COMMAND ----------
+
+# MAGIC %restart_python
+
+# COMMAND ----------
+
 # Configuration
-CATALOG = "your_catalog"
-SCHEMA = "your_schema"
+CATALOG = "stuart"
+SCHEMA = "lseg"
+VOLUME_NAME = "netcdf"
 
 # Paths
-LANDING_ZONE = f"/Volumes/{CATALOG}/{SCHEMA}/bronze/grib/"
-LOCAL_ZARR_PATH = "/local_disk0/forecast.zarr"
-CLOUD_DESTINATION = f"/Volumes/{CATALOG}/{SCHEMA}/silver/"
-CHECKPOINT_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/checkpoints/grib_pipeline"
+LANDING_ZONE = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/landing/"
+LOCAL_ZARR_PATH = "/tmp/forecast.zarr"
+CLOUD_DESTINATION = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/silver/"
+CHECKPOINT_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/checkpoints/grib_pipeline"
 
 # Processing parameters
 MAX_FILES_PER_BATCH = 32
@@ -38,7 +51,7 @@ TRIGGER_INTERVAL = "0 seconds"  # Process immediately (no buffering)
 # COMMAND ----------
 
 import sys
-sys.path.insert(0, '/Workspace/Repos/your_user/raster-benchmarking')
+# sys.path.insert(0, '/Workspace/Repos/your_user/raster-benchmarking')
 
 from datetime import datetime
 from src.streaming_pipeline import (
@@ -53,7 +66,7 @@ from src.zarr_init import initialize_zarr_store, generate_forecast_steps
 
 # MAGIC %md
 # MAGIC ## Initialize Zarr Store (if needed)
-# MAGIC 
+# MAGIC
 # MAGIC The store should be initialized at the start of each forecast cycle
 # MAGIC (00:00, 06:00, 12:00, 18:00 UTC).
 
@@ -112,7 +125,7 @@ print(f"  Trigger: {config.trigger_interval}")
 
 # MAGIC %md
 # MAGIC ## Start Streaming Pipeline
-# MAGIC 
+# MAGIC
 # MAGIC The pipeline will run continuously, processing GRIB files as they arrive.
 
 # COMMAND ----------
@@ -122,7 +135,7 @@ manager = PipelineManager(spark, config)
 
 # Start the pipeline
 manager.start()
-
+  
 print(f"✓ Pipeline started")
 print(f"  Query ID: {manager.query.id}")
 print(f"  Status: {manager.status}")
@@ -131,7 +144,7 @@ print(f"  Status: {manager.status}")
 
 # MAGIC %md
 # MAGIC ## Monitor Pipeline Progress
-# MAGIC 
+# MAGIC
 # MAGIC Use this cell to monitor the pipeline while it's running.
 
 # COMMAND ----------
@@ -184,7 +197,7 @@ print(f"\nFinal metrics: {manager.get_metrics()}")
 
 # MAGIC %md
 # MAGIC ## Alternative: Batch Processing Mode
-# MAGIC 
+# MAGIC
 # MAGIC For testing or one-time processing, you can use batch mode instead of streaming.
 
 # COMMAND ----------
@@ -230,7 +243,7 @@ if file_paths:
 
 # MAGIC %md
 # MAGIC ## Success Criteria Validation
-# MAGIC 
+# MAGIC
 # MAGIC Per the architecture document:
 # MAGIC - End-to-end latency should be < 30 seconds
 
