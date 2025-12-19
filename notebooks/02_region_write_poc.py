@@ -180,10 +180,10 @@ if grib_paths:
 # COMMAND ----------
 
 # Test parallel writes with multiple files
-batch_size = min(10, len(grib_paths))
+batch_size = min(MAX_WORKERS, len(grib_paths))
 
 if batch_size > 0:
-    test_batch = [p.replace("dbfs:", "/dbfs") for p in grib_paths[:batch_size]]
+    test_batch = [p.replace("dbfs:", "") for p in grib_paths[:batch_size]]
     
     print(f"Testing parallel write with {batch_size} files")
     print(f"Workers: {MAX_WORKERS}")
@@ -221,6 +221,7 @@ if batch_size > 0:
 # COMMAND ----------
 
 import xarray as xr
+import numpy as np
 
 # Open store and verify data
 ds = xr.open_zarr(LOCAL_ZARR_PATH, consolidated=True)
