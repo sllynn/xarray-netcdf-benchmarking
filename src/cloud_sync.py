@@ -296,20 +296,143 @@ def find_azcopy() -> Optional[str]:
     if azcopy_path:
         return azcopy_path
     
-    # Check common locations
+    # Check common locations including our install location
     common_paths = [
         '/usr/local/bin/azcopy',
         '/usr/bin/azcopy',
         os.path.expanduser('~/bin/azcopy'),
         '/databricks/driver/bin/azcopy',
         '/local_disk0/bin/azcopy',
+        '/tmp/azcopy/azcopy',  # Our install location
     ]
+    
+    # Also check for extracted azcopy in /tmp/azcopy/*/
+    import glob
+    common_paths.extend(glob.glob('/tmp/azcopy/*/azcopy'))
     
     for path in common_paths:
         if os.path.isfile(path) and os.access(path, os.X_OK):
             return path
     
     return None
+
+
+def install_azcopy(install_dir: str = "/tmp/azcopy") -> str:
+    """Download and install azcopy to a local directory.
+    
+    Parameters
+    ----------
+    install_dir : str
+        Directory to install azcopy to (default: /tmp/azcopy).
+    
+    Returns
+    -------
+    str
+        Path to the installed azcopy executable.
+    
+    Raises
+    ------
+    RuntimeError
+        If installation fails.
+    """
+    import glob
+    import platform
+    
+    # Check if already installed
+    existing = glob.glob(f"{install_dir}/*/azcopy")
+    if existing:
+        logger.info(f"azcopy already installed at {existing[0]}")
+        return existing[0]
+    
+    # Determine download URL based on platform
+    system = platform.system().lower()
+    if system == "linux":
+        download_url = "https://aka.ms/downloadazcopy-v10-linux"
+    elif system == "darwin":
+        download_url = "https://aka.ms/downloadazcopy-v10-mac"
+    else:
+        raise RuntimeError(f"Unsupported platform: {system}")
+    
+    logger.info(f"Installing azcopy for {system} to {install_dir}...")
+    
+    os.makedirs(install_dir, exist_ok=True)
+    
+    try:
+        # Download azcopy
+        download_result = subprocess.run(
+            [
+                "curl", "-sL",
+                download_url,
+                "-o", f"{install_dir}/azcopy.tar.gz"
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        
+        if download_result.returncode != 0:
+            raise RuntimeError(f"Failed to download azcopy: {download_result.stderr}")
+        
+        # Extract
+        extract_result = subprocess.run(
+            [
+                "tar", "-xzf", f"{install_dir}/azcopy.tar.gz",
+                "-C", install_dir
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        
+        if extract_result.returncode != 0:
+            raise RuntimeError(f"Failed to extract azcopy: {extract_result.stderr}")
+        
+        # Find the extracted binary
+        azcopy_paths = glob.glob(f"{install_dir}/*/azcopy")
+        if not azcopy_paths:
+            raise RuntimeError(f"azcopy binary not found after extraction")
+        
+        azcopy_path = azcopy_paths[0]
+        
+        # Verify it works
+        verify_result = subprocess.run(
+            [azcopy_path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        
+        if verify_result.returncode != 0:
+            raise RuntimeError(f"azcopy verification failed: {verify_result.stderr}")
+        
+        logger.info(f"azcopy installed: {verify_result.stdout.strip()}")
+        return azcopy_path
+        
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"azcopy installation timed out: {e}")
+    except Exception as e:
+        raise RuntimeError(f"azcopy installation failed: {e}")
+
+
+def ensure_azcopy() -> str:
+    """Find azcopy or install it if not available.
+    
+    Returns
+    -------
+    str
+        Path to azcopy executable.
+    
+    Raises
+    ------
+    RuntimeError
+        If azcopy cannot be found or installed.
+    """
+    azcopy_path = find_azcopy()
+    if azcopy_path:
+        return azcopy_path
+    
+    # Try to install
+    return install_azcopy()
 
 
 def sync_with_azcopy(
@@ -351,8 +474,10 @@ def sync_with_azcopy(
     SyncResult
         Result of the sync operation.
     """
-    azcopy_path = find_azcopy()
-    if azcopy_path is None:
+    # Try to find or auto-install azcopy
+    try:
+        azcopy_path = ensure_azcopy()
+    except RuntimeError as e:
         return SyncResult(
             success=False,
             source_path=source_path,
@@ -360,7 +485,7 @@ def sync_with_azcopy(
             files_transferred=0,
             bytes_transferred=0,
             elapsed_seconds=0,
-            error="azcopy not found. Install from https://aka.ms/downloadazcopy",
+            error=str(e),
         )
     
     # Build command
