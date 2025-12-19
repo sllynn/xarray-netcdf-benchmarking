@@ -249,6 +249,7 @@ def create_streaming_pipeline(
     # Use file notification mode if enabled (recommended for low latency)
     if config.use_file_notification:
         reader_options['cloudFiles.useNotifications'] = 'true'
+        reader_options['cloudFiles.useManagedFileEvents'] = 'true'
     
     # Create the streaming DataFrame
     stream_df = (
@@ -257,6 +258,7 @@ def create_streaming_pipeline(
         .options(**reader_options)
         .option('pathGlobFilter', '*.grib*')  # Match .grib and .grib2
         .load(config.landing_zone)
+        .drop("content")
     )
     
     # Start the streaming query
