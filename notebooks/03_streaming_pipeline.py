@@ -74,11 +74,12 @@ from src.zarr_init import initialize_zarr_store, generate_forecast_steps
 
 # Check if store exists, create if needed
 from pathlib import Path
+from datetime import timezone
 
 if not Path(LOCAL_ZARR_PATH).exists():
     print("Initializing Zarr store...")
     
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     cycle_hour = (now.hour // 6) * 6
     reference_time = now.replace(hour=cycle_hour, minute=0, second=0, microsecond=0)
     
@@ -205,11 +206,15 @@ print(f"\nFinal metrics: {manager.get_metrics()}")
 # List files for batch processing
 from pyspark.sql.functions import col
 
-# Get list of GRIB files
-grib_files = spark.read.format("binaryFile").load(LANDING_ZONE)
+# Get list of GRIB files (filter to exclude .idx sidecar files and other artifacts)
+grib_files = (
+    spark.read.format("binaryFile")
+    .option("pathGlobFilter", "*.{grib,grib2,grb,grb2}")
+    .load(LANDING_ZONE)
+)
 file_paths = [row.path for row in grib_files.select("path").collect()]
 
-print(f"Found {len(file_paths)} files for batch processing")
+print(f"Found {len(file_paths)} GRIB files for batch processing")
 
 # COMMAND ----------
 

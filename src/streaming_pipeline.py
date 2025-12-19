@@ -152,13 +152,24 @@ def create_streaming_pipeline(
         
         # Collect file paths to driver
         # AutoLoader provides 'path' column with binary file format
-        file_paths = [row.path.replace("dbfs:", "") for row in batch_df.select('path').collect()]
+        all_paths = [row.path.replace("dbfs:", "") for row in batch_df.select('path').collect()]
+        
+        # Filter to only actual GRIB files (safety net in case glob filter misses some)
+        GRIB_EXTENSIONS = {'.grib', '.grib2', '.grb', '.grb2'}
+        file_paths = [
+            p for p in all_paths 
+            if any(p.lower().endswith(ext) for ext in GRIB_EXTENSIONS)
+        ]
+        
+        skipped = len(all_paths) - len(file_paths)
+        if skipped > 0:
+            logger.warning(f"Batch {batch_id}: Skipped {skipped} non-GRIB files")
         
         if not file_paths:
-            logger.info(f"Batch {batch_id}: No files to process")
+            logger.info(f"Batch {batch_id}: No GRIB files to process")
             return
         
-        logger.info(f"Batch {batch_id}: Processing {len(file_paths)} files")
+        logger.info(f"Batch {batch_id}: Processing {len(file_paths)} GRIB files")
         
         # Process files in parallel
         process_start = time.perf_counter()
@@ -252,11 +263,12 @@ def create_streaming_pipeline(
         reader_options['cloudFiles.useManagedFileEvents'] = 'true'
     
     # Create the streaming DataFrame
+    # Use specific glob pattern to exclude .idx sidecar files and other artifacts
     stream_df = (
         spark.readStream
         .format('cloudFiles')
         .options(**reader_options)
-        .option('pathGlobFilter', '*.grib*')  # Match .grib and .grib2
+        .option('pathGlobFilter', '*.{grib,grib2,grb,grb2}')  # Only actual GRIB files
         .load(config.landing_zone)
         .drop("content")
     )
