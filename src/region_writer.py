@@ -757,10 +757,20 @@ def stage_files_with_azcopy(
         
         total_elapsed = (time.perf_counter() - start_time) * 1000
         
+        # Debug: List what's actually in staging_dir to find where files went
+        logger.info(f"Listing staging directory contents:")
+        for root, dirs, files in os.walk(staging_dir):
+            rel_root = os.path.relpath(root, staging_dir)
+            for f in files[:5]:  # Limit output
+                logger.info(f"  Found: {os.path.join(rel_root, f)}")
+            if len(files) > 5:
+                logger.info(f"  ... and {len(files) - 5} more files in {rel_root}")
+        
         # Verify files were downloaded
         missing = [fp for fp, lp in staged_paths.items() if not os.path.exists(lp)]
         if missing:
-            logger.warning(f"azcopy completed but {len(missing)} files missing: {missing[:3]}...")
+            logger.warning(f"azcopy completed but {len(missing)} files missing at expected paths")
+            logger.warning(f"Expected path example: {staged_paths[missing[0]]}")
         
         logger.info(
             f"Staged {len(file_paths)} files in {total_elapsed:.0f}ms "
