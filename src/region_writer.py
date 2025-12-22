@@ -817,7 +817,7 @@ def download_single_file_azcopy(
     staging_dir : str
         Local directory to download to.
     token_manager : TokenManager, optional
-        Shared TokenManager for SAS tokens.
+        Shared TokenManager for SAS tokens (required for efficiency).
     
     Returns
     -------
@@ -833,7 +833,7 @@ def download_single_file_azcopy(
     
     os.makedirs(staging_dir, exist_ok=True)
     
-    # Parse volume path
+    # Parse volume path to get relative path
     parts = PathLib(volume_path).parts
     if len(parts) < 5 or parts[1] != 'Volumes':
         raise ValueError(f"Expected /Volumes/catalog/schema/volume/... path, got: {volume_path}")
@@ -846,21 +846,11 @@ def download_single_file_azcopy(
     if token_manager is None:
         token_manager = TokenManager(volume_name)
     
-    # Get storage info
-    from databricks.sdk import WorkspaceClient
-    w = WorkspaceClient()
-    volume_info = w.volumes.read(volume_name)
-    storage_location = volume_info.storage_location
-    
-    from urllib.parse import urlparse
-    parsed = urlparse(storage_location)
-    container, host_rest = parsed.netloc.split('@', 1)
-    storage_account = host_rest.split('.')[0]
-    volume_base_path = parsed.path.lstrip('/')
-    
-    # Get SAS token
-    sas_url = token_manager.get_sas_url()
-    sas_token = sas_url.split('?', 1)[1] if '?' in sas_url else ''
+    # Use cached values from TokenManager (no API calls!)
+    storage_account = token_manager.storage_account
+    container = token_manager.container
+    volume_base_path = token_manager.base_path
+    sas_token = token_manager.get_sas_token()
     
     # Build blob URL
     rel_path = volume_path[len(volume_prefix):].lstrip('/')
@@ -888,7 +878,7 @@ def download_single_file_azcopy(
     result = subprocess.run(cmd, capture_output=True, text=True)
     
     if result.returncode != 0:
-        raise RuntimeError(f"azcopy failed: {result.stderr}")
+        raise RuntimeError(f"azcopy failed for {os.path.basename(volume_path)}: {result.stderr}")
     
     elapsed_ms = (time.perf_counter() - start_time) * 1000
     logger.debug(f"Downloaded {os.path.basename(volume_path)} via azcopy in {elapsed_ms:.0f}ms")
@@ -913,7 +903,7 @@ def download_single_file_azure_sdk(
     staging_dir : str
         Local directory to download to.
     token_manager : TokenManager, optional
-        Shared TokenManager for SAS tokens.
+        Shared TokenManager for SAS tokens (required for efficiency).
     
     Returns
     -------
@@ -928,7 +918,7 @@ def download_single_file_azure_sdk(
     
     os.makedirs(staging_dir, exist_ok=True)
     
-    # Parse volume path
+    # Parse volume path to get relative path
     parts = PathLib(volume_path).parts
     if len(parts) < 5 or parts[1] != 'Volumes':
         raise ValueError(f"Expected /Volumes/catalog/schema/volume/... path, got: {volume_path}")
@@ -941,21 +931,11 @@ def download_single_file_azure_sdk(
     if token_manager is None:
         token_manager = TokenManager(volume_name)
     
-    # Get storage info
-    from databricks.sdk import WorkspaceClient
-    w = WorkspaceClient()
-    volume_info = w.volumes.read(volume_name)
-    storage_location = volume_info.storage_location
-    
-    from urllib.parse import urlparse
-    parsed = urlparse(storage_location)
-    container, host_rest = parsed.netloc.split('@', 1)
-    storage_account = host_rest.split('.')[0]
-    volume_base_path = parsed.path.lstrip('/')
-    
-    # Get SAS token
-    sas_url = token_manager.get_sas_url()
-    sas_token = sas_url.split('?', 1)[1] if '?' in sas_url else ''
+    # Use cached values from TokenManager (no API calls!)
+    storage_account = token_manager.storage_account
+    container = token_manager.container
+    volume_base_path = token_manager.base_path
+    sas_token = token_manager.get_sas_token()
     
     # Build blob path
     rel_path = volume_path[len(volume_prefix):].lstrip('/')
@@ -980,7 +960,7 @@ def download_single_file_azure_sdk(
         f.write(stream.readall())
     
     elapsed_ms = (time.perf_counter() - start_time) * 1000
-    logger.debug(f"Downloaded {os.path.basename(volume_path)} in {elapsed_ms:.0f}ms")
+    logger.debug(f"Downloaded {os.path.basename(volume_path)} via azure_sdk in {elapsed_ms:.0f}ms")
     
     return local_path
 

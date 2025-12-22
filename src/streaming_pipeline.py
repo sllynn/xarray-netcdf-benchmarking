@@ -213,6 +213,7 @@ def create_streaming_pipeline(
                 if config.staging_method == 'azcopy' 
                 else download_single_file_azure_sdk
             )
+            logger.info(f"Batch {batch_id}: Using {config.staging_method} for stream downloads")
             
             def download_and_process(volume_path):
                 """Download a single file and process it immediately."""

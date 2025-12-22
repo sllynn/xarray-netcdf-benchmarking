@@ -47,6 +47,7 @@ class TokenInfo:
     azure_url: str
     storage_account: str
     container: str
+    base_path: str  # Path within the container (e.g., 'lseg/netcdf')
 
 
 class TokenManager:
@@ -85,6 +86,9 @@ class TokenManager:
         self._token_info: Optional[TokenInfo] = None
         self._workspace_client = None
         self._volume_storage_location: Optional[str] = None
+        # Thread-safe token refresh
+        import threading
+        self._lock = threading.Lock()
     
     @classmethod
     def from_volume_path(
@@ -244,6 +248,7 @@ class TokenManager:
                 azure_url=azure_url,
                 storage_account=storage_account,
                 container=container,
+                base_path=base_path,
             )
             
             logger.info(f"Token refreshed, expires at {expiration}")
@@ -253,29 +258,49 @@ class TokenManager:
             raise
     
     def get_sas_url(self) -> str:
-        """Get destination URL with valid SAS token.
+        """Get destination URL with valid SAS token (thread-safe).
         
         Returns
         -------
         str
             Full URL with SAS token appended as query parameter.
         """
-        if self._needs_refresh():
-            self._refresh_token()
-        
+        self._ensure_valid_token()
         return f"{self._token_info.azure_url}?{self._token_info.token}"
     
+    def _ensure_valid_token(self) -> None:
+        """Ensure we have a valid token, refreshing if needed (thread-safe)."""
+        # Fast path: token is valid, no lock needed
+        if not self._needs_refresh():
+            return
+        
+        # Slow path: need to refresh, acquire lock
+        with self._lock:
+            # Double-check after acquiring lock (another thread may have refreshed)
+            if self._needs_refresh():
+                self._refresh_token()
+    
     def get_azure_url(self) -> str:
-        """Get the Azure Blob URL without the SAS token.
+        """Get the Azure Blob URL without the SAS token (thread-safe).
         
         Returns
         -------
         str
             Azure Blob URL (useful for logging without exposing token).
         """
-        if self._token_info is None:
-            self._refresh_token()
+        self._ensure_valid_token()
         return self._token_info.azure_url
+    
+    def get_sas_token(self) -> str:
+        """Get just the SAS token (thread-safe).
+        
+        Returns
+        -------
+        str
+            The SAS token string.
+        """
+        self._ensure_valid_token()
+        return self._token_info.token
     
     @property
     def token_expiration(self) -> Optional[datetime]:
@@ -291,6 +316,12 @@ class TokenManager:
     def container(self) -> Optional[str]:
         """Get the container name."""
         return self._token_info.container if self._token_info else None
+    
+    @property
+    def base_path(self) -> Optional[str]:
+        """Get the base path within the container."""
+        self._ensure_valid_token()
+        return self._token_info.base_path if self._token_info else None
 
 
 def find_azcopy() -> Optional[str]:
