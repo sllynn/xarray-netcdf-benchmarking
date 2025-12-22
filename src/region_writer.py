@@ -792,6 +792,151 @@ def stage_files_with_azcopy(
         raise
 
 
+def stage_files_with_azure_sdk(
+    file_paths: list[str],
+    staging_dir: str = DEFAULT_STAGING_DIR,
+    max_concurrency: int = 32,
+) -> dict[str, str]:
+    """Stage files from Azure Blob Storage to local SSD using Azure SDK.
+    
+    This is an alternative to azcopy that avoids the ~15s startup overhead
+    by using persistent HTTP connections via the Azure SDK.
+    
+    Parameters
+    ----------
+    file_paths : list[str]
+        List of file paths (e.g., /Volumes/catalog/schema/volume/path/file.grib2).
+    staging_dir : str
+        Local directory to copy files to.
+    max_concurrency : int
+        Maximum concurrent downloads (default: 32).
+    
+    Returns
+    -------
+    dict[str, str]
+        Mapping from original path to local staged path.
+    """
+    import asyncio
+    import time
+    from pathlib import Path as PathLib
+    from .cloud_sync import TokenManager
+    
+    if not file_paths:
+        return {}
+    
+    os.makedirs(staging_dir, exist_ok=True)
+    
+    # Extract volume info from first path
+    first_path = file_paths[0]
+    parts = PathLib(first_path).parts
+    
+    if len(parts) < 5 or parts[1] != 'Volumes':
+        raise ValueError(f"Expected /Volumes/catalog/schema/volume/... path, got: {first_path}")
+    
+    catalog, schema, volume = parts[2], parts[3], parts[4]
+    volume_name = f"{catalog}.{schema}.{volume}"
+    volume_prefix = f"/Volumes/{catalog}/{schema}/{volume}"
+    
+    logger.info(f"Staging {len(file_paths)} files from volume {volume_name} using Azure SDK")
+    
+    try:
+        # Get token and storage info
+        token_manager = TokenManager(volume_name)
+        
+        from databricks.sdk import WorkspaceClient
+        w = WorkspaceClient()
+        volume_info = w.volumes.read(volume_name)
+        storage_location = volume_info.storage_location
+        
+        from urllib.parse import urlparse
+        parsed = urlparse(storage_location)
+        container, host_rest = parsed.netloc.split('@', 1)
+        storage_account = host_rest.split('.')[0]
+        volume_base_path = parsed.path.lstrip('/')
+        
+        # Get SAS token
+        sas_url = token_manager.get_sas_url()
+        sas_token = sas_url.split('?', 1)[1] if '?' in sas_url else ''
+        
+        # Build container URL with SAS
+        container_url = f"https://{storage_account}.blob.core.windows.net/{container}?{sas_token}"
+        
+        start_time = time.perf_counter()
+        
+        # Build list of (blob_path, local_path) tuples
+        downloads = []
+        staged_paths = {}
+        
+        for fpath in file_paths:
+            rel_path = fpath[len(volume_prefix):].lstrip('/')
+            if volume_base_path:
+                blob_path = f"{volume_base_path}/{rel_path}"
+            else:
+                blob_path = rel_path
+            
+            # Match azcopy behavior: include volume dir name in local path
+            source_dir_name = volume_base_path.rstrip('/').split('/')[-1] if volume_base_path else ''
+            local_path = os.path.join(staging_dir, source_dir_name, rel_path)
+            
+            downloads.append((blob_path, local_path))
+            staged_paths[fpath] = local_path
+        
+        # Run async downloads
+        async def download_all():
+            from azure.storage.blob.aio import ContainerClient
+            
+            async with ContainerClient.from_container_url(container_url) as client:
+                semaphore = asyncio.Semaphore(max_concurrency)
+                
+                async def download_one(blob_path: str, local_path: str):
+                    async with semaphore:
+                        # Ensure directory exists
+                        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                        
+                        blob_client = client.get_blob_client(blob_path)
+                        
+                        # Download to file
+                        with open(local_path, 'wb') as f:
+                            stream = await blob_client.download_blob()
+                            data = await stream.readall()
+                            f.write(data)
+                
+                tasks = [download_one(bp, lp) for bp, lp in downloads]
+                await asyncio.gather(*tasks)
+        
+        # Run the async event loop
+        # Handle case where we're already in an async context
+        try:
+            asyncio.get_running_loop()
+            # We're in an async context, need to run in executor
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, download_all())
+                future.result()
+        except RuntimeError:
+            # No running loop, safe to use asyncio.run
+            asyncio.run(download_all())
+        
+        total_elapsed = (time.perf_counter() - start_time) * 1000
+        
+        # Verify files were downloaded
+        missing = [fp for fp, lp in staged_paths.items() if not os.path.exists(lp)]
+        if missing:
+            logger.warning(f"Azure SDK download completed but {len(missing)} files missing")
+            logger.warning(f"Expected path example: {staged_paths[missing[0]]}")
+        
+        logger.info(
+            f"Staged {len(file_paths)} files in {total_elapsed:.0f}ms "
+            f"({total_elapsed/len(file_paths):.0f}ms/file avg) via Azure SDK"
+        )
+        
+        return staged_paths
+        
+    except Exception as e:
+        logger.error(f"Azure SDK staging failed: {e}")
+        raise
+
+
 def write_grib_to_zarr_direct(
     grib_path: str,
     zarr_arrays: dict,

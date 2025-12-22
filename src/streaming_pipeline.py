@@ -48,6 +48,10 @@ class PipelineConfig:
         Use file notification mode for AutoLoader (default: True).
     sync_after_each_batch : bool
         Sync to cloud after each batch (default: True).
+    staging_method : str
+        Method to stage files from cloud storage: 'azcopy' or 'azure_sdk'.
+        'azcopy' has ~15s overhead but fast transfers.
+        'azure_sdk' has no startup overhead, uses async HTTP.
     """
     landing_zone: str
     zarr_store_path: str
@@ -58,6 +62,7 @@ class PipelineConfig:
     trigger_interval: str = '0 seconds'
     use_file_notification: bool = True
     sync_after_each_batch: bool = True
+    staging_method: str = 'azcopy'  # 'azcopy' or 'azure_sdk'
 
 
 @dataclass
@@ -151,7 +156,8 @@ def create_streaming_pipeline(
         5. Cleans up staged files
         """
         from .region_writer import (
-            stage_files_with_azcopy, 
+            stage_files_with_azcopy,
+            stage_files_with_azure_sdk,
             cleanup_staging_dir,
             open_zarr_arrays,
             write_grib_to_zarr_direct,
@@ -180,14 +186,17 @@ def create_streaming_pipeline(
         
         logger.info(f"Batch {batch_id}: Processing {len(file_paths)} GRIB files")
         
-        # Stage all files to local SSD using azcopy (batch operation)
+        # Stage all files to local SSD (method configurable)
         stage_start = time.perf_counter()
         try:
-            staged_paths = stage_files_with_azcopy(file_paths)
+            if config.staging_method == 'azure_sdk':
+                staged_paths = stage_files_with_azure_sdk(file_paths)
+            else:  # default to azcopy
+                staged_paths = stage_files_with_azcopy(file_paths)
             stage_time = (time.perf_counter() - stage_start) * 1000
-            logger.info(f"Batch {batch_id}: Staged {len(staged_paths)} files in {stage_time:.0f}ms")
+            logger.info(f"Batch {batch_id}: Staged {len(staged_paths)} files in {stage_time:.0f}ms via {config.staging_method}")
         except Exception as e:
-            logger.error(f"Batch {batch_id}: azcopy staging failed: {e}, falling back to FUSE")
+            logger.error(f"Batch {batch_id}: {config.staging_method} staging failed: {e}, falling back to FUSE")
             # Fallback: process directly from cloud (slower)
             staged_paths = {fp: fp for fp in file_paths}
             stage_time = (time.perf_counter() - stage_start) * 1000
