@@ -631,10 +631,8 @@ def stage_files_with_azcopy(
 ) -> dict[str, str]:
     """Stage files from cloud storage to local SSD using azcopy.
     
-    Uses azcopy's --include-path option to download multiple files in a single
-    command, which is much faster than individual downloads.
-    
-    See: https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azcopy-files
+    Downloads each file directly using its full blob URL. Runs azcopy calls
+    in parallel using ThreadPoolExecutor for maximum throughput.
     
     Parameters
     ----------
@@ -650,6 +648,7 @@ def stage_files_with_azcopy(
     """
     import subprocess
     import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from pathlib import Path as PathLib
     from .cloud_sync import TokenManager, ensure_azcopy
     
@@ -668,7 +667,7 @@ def stage_files_with_azcopy(
     catalog, schema, volume = parts[2], parts[3], parts[4]
     volume_name = f"{catalog}.{schema}.{volume}"
     
-    # Get the base path within the volume (everything after /Volumes/cat/schema/vol/)
+    # Volume prefix: /Volumes/catalog/schema/volume
     volume_prefix = f"/Volumes/{catalog}/{schema}/{volume}"
     
     logger.info(f"Staging {len(file_paths)} files from volume {volume_name} using azcopy")
@@ -683,68 +682,73 @@ def stage_files_with_azcopy(
         volume_info = w.volumes.read(volume_name)
         storage_location = volume_info.storage_location  # abfss://container@account.dfs.core.windows.net/path
         
-        # Parse the storage URL
+        # Parse the storage URL to get container and account
+        # Example: abfss://stuart@oneenvadls.dfs.core.windows.net/lseg/netcdf
+        # -> container=stuart, account=oneenvadls, base_path=lseg/netcdf
         from urllib.parse import urlparse
         parsed = urlparse(storage_location)
         container, host_rest = parsed.netloc.split('@', 1)
         storage_account = host_rest.split('.')[0]
         volume_base_path = parsed.path.lstrip('/')
         
+        logger.debug(f"Volume storage: container={container}, account={storage_account}, base={volume_base_path}")
+        
         # Get SAS token
         sas_url = token_manager.get_sas_url()
-        # Extract just the SAS token part (after ?)
         sas_token = sas_url.split('?', 1)[1] if '?' in sas_url else ''
         
         # Ensure azcopy is available
         azcopy_path = ensure_azcopy()
         
         start_time = time.perf_counter()
-        
-        # Build the --include-path argument: semicolon-separated relative paths
-        # Each path is relative to the volume root (volume_base_path)
-        relative_paths = []
         staged_paths = {}
         
-        for fpath in file_paths:
-            # Get the relative path within the volume
+        def download_one_file(fpath: str) -> tuple[str, str]:
+            """Download a single file using azcopy with its full blob URL."""
+            # Build the full blob path
+            # /Volumes/stuart/lseg/netcdf/landing/file.grib2 
+            # -> relative to volume: landing/file.grib2
+            # -> full blob path: lseg/netcdf/landing/file.grib2
             rel_path = fpath[len(volume_prefix):].lstrip('/')
-            relative_paths.append(rel_path)
             
-            # Track the mapping (azcopy will preserve the filename)
+            # Construct full blob path: volume_base_path + rel_path
+            if volume_base_path:
+                blob_path = f"{volume_base_path}/{rel_path}"
+            else:
+                blob_path = rel_path
+            
+            # Build the full source URL
+            source_url = f"https://{storage_account}.blob.core.windows.net/{container}/{blob_path}?{sas_token}"
+            
+            # Local destination
             local_path = os.path.join(staging_dir, PathLib(fpath).name)
-            staged_paths[fpath] = local_path
+            
+            cmd = [
+                azcopy_path, 'copy',
+                source_url,
+                local_path,
+                '--output-level', 'quiet',
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(f"azcopy failed for {fpath}: {result.stderr}")
+            
+            return fpath, local_path
         
-        # Build the source URL (volume root with SAS token)
-        source_url = f"https://{storage_account}.blob.core.windows.net/{container}/{volume_base_path}?{sas_token}"
-        
-        # Build semicolon-separated list of relative paths
-        include_path = ';'.join(relative_paths)
-        
-        # Run single azcopy command with --include-path
-        # azcopy copy '<source>?<sas>' '<dest>' --include-path 'file1;file2;file3'
-        cmd = [
-            azcopy_path, 'copy',
-            source_url,
-            staging_dir,
-            '--include-path', include_path,
-            '--output-level', 'quiet',
-        ]
-        
-        logger.debug(f"Running azcopy with {len(relative_paths)} files in --include-path")
-        
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            # Log stderr for debugging
-            logger.error(f"azcopy stderr: {result.stderr}")
-            raise RuntimeError(f"azcopy failed with code {result.returncode}: {result.stderr}")
+        # Run downloads in parallel
+        max_workers = min(32, len(file_paths))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(download_one_file, fp): fp for fp in file_paths}
+            for future in as_completed(futures):
+                try:
+                    orig_path, local_path = future.result()
+                    staged_paths[orig_path] = local_path
+                except Exception as e:
+                    logger.error(f"Failed to stage {futures[future]}: {e}")
+                    raise
         
         total_elapsed = (time.perf_counter() - start_time) * 1000
-        
-        # Verify files were downloaded
-        missing = [fp for fp, lp in staged_paths.items() if not os.path.exists(lp)]
-        if missing:
-            logger.warning(f"azcopy completed but {len(missing)} files missing: {missing[:3]}...")
         
         logger.info(
             f"Staged {len(file_paths)} files in {total_elapsed:.0f}ms "
