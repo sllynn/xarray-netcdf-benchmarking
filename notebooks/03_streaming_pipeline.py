@@ -66,6 +66,11 @@ logging.getLogger('src.region_writer').setLevel(logging.INFO)
 logging.getLogger('src.streaming_pipeline').setLevel(logging.INFO)
 logging.getLogger('src.cloud_sync').setLevel(logging.INFO)
 
+# Reduce noise from Spark/Py4J
+logging.getLogger('py4j').setLevel(logging.WARNING)
+logging.getLogger('py4j.clientserver').setLevel(logging.WARNING)
+logging.getLogger('py4j.java_gateway').setLevel(logging.WARNING)
+
 print("✓ Logging configured")
 
 # COMMAND ----------
@@ -119,6 +124,30 @@ if not Path(LOCAL_ZARR_PATH).exists():
     print(f"✓ Store initialized for cycle {reference_time}")
 else:
     print(f"✓ Using existing store at {LOCAL_ZARR_PATH}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Clear Checkpoint (for testing)
+# MAGIC
+# MAGIC Clear the checkpoint directory to reprocess all files. 
+# MAGIC Comment this out in production to enable incremental processing.
+
+# COMMAND ----------
+
+import shutil
+
+# Clear checkpoint to reprocess all files
+try:
+    dbutils.fs.rm(CHECKPOINT_PATH, recurse=True)
+    print(f"✓ Cleared checkpoint: {CHECKPOINT_PATH}")
+except Exception as e:
+    # Checkpoint may not exist yet on first run
+    print(f"Note: Could not clear checkpoint (may not exist yet): {e}")
+
+# Also clear local Zarr store if you want a fresh start
+shutil.rmtree(LOCAL_ZARR_PATH, ignore_errors=True)
+print(f"✓ Cleared local Zarr store: {LOCAL_ZARR_PATH}")
 
 # COMMAND ----------
 
