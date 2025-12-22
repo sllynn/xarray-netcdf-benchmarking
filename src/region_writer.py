@@ -708,14 +708,19 @@ def stage_files_with_azcopy(
         relative_paths = []
         staged_paths = {}
         
+        # azcopy includes the last component of the source URL path in destination
+        # e.g., source .../lseg/netcdf -> creates netcdf/ subdirectory
+        source_dir_name = volume_base_path.rstrip('/').split('/')[-1] if volume_base_path else ''
+        
         for fpath in file_paths:
             # Get the relative path within the volume
             # /Volumes/stuart/lseg/netcdf/landing/file.grib2 -> landing/file.grib2
             rel_path = fpath[len(volume_prefix):].lstrip('/')
             relative_paths.append(rel_path)
             
-            # azcopy preserves directory structure, so local path includes rel_path
-            local_path = os.path.join(staging_dir, rel_path)
+            # azcopy creates: staging_dir/source_dir_name/rel_path
+            # e.g., /local_disk0/grib_staging/netcdf/landing/file.grib2
+            local_path = os.path.join(staging_dir, source_dir_name, rel_path)
             staged_paths[fpath] = local_path
         
         # Build the source URL pointing to the volume root directory (not just container)
