@@ -792,6 +792,134 @@ def stage_files_with_azcopy(
         raise
 
 
+def write_grib_to_zarr_direct(
+    grib_path: str,
+    zarr_arrays: dict,
+    hour_to_index: dict[int, int],
+    use_cfgrib: bool = False,
+) -> WriteResult:
+    """Write GRIB data directly to zarr arrays (no xarray overhead).
+    
+    This is much faster than write_grib_to_zarr_region because:
+    - No xarray Dataset creation
+    - No metadata parsing per write
+    - Direct numpy array assignment
+    - No file locking for non-overlapping regions
+    
+    Parameters
+    ----------
+    grib_path : str
+        Path to the GRIB file (should be local for speed).
+    zarr_arrays : dict
+        Dict mapping variable names to open zarr arrays.
+        Get this from open_zarr_arrays().
+    hour_to_index : dict[int, int]
+        Mapping from forecast hour to array index.
+    use_cfgrib : bool
+        Use cfgrib instead of eccodes for reading.
+    
+    Returns
+    -------
+    WriteResult
+        Result containing success status and timing.
+    """
+    import time
+    start_time = time.perf_counter()
+    original_path = str(grib_path)
+    
+    try:
+        # Read GRIB data
+        t0 = time.perf_counter()
+        if use_cfgrib:
+            data, metadata = read_grib_with_cfgrib(grib_path)
+        else:
+            data, metadata = read_grib_data(grib_path)
+        read_ms = (time.perf_counter() - t0) * 1000
+        
+        # Map forecast hour to step index
+        if metadata.forecast_hour not in hour_to_index:
+            raise ValueError(
+                f"Forecast hour {metadata.forecast_hour} not in step mapping"
+            )
+        step_index = hour_to_index[metadata.forecast_hour]
+        
+        # Get the zarr array for this variable
+        var_name = metadata.variable
+        if var_name not in zarr_arrays:
+            raise ValueError(
+                f"Variable '{var_name}' not found. Available: {list(zarr_arrays.keys())}"
+            )
+        zarr_array = zarr_arrays[var_name]
+        
+        # Direct write - no locking needed for non-overlapping regions!
+        t0 = time.perf_counter()
+        actual_ensemble = data.shape[0]
+        zarr_array[step_index, :actual_ensemble, :, :] = data
+        write_ms = (time.perf_counter() - t0) * 1000
+        
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        
+        logger.info(
+            f"Direct write {Path(original_path).name}: "
+            f"read={read_ms:.0f}ms, write={write_ms:.0f}ms, total={elapsed_ms:.0f}ms"
+        )
+        
+        return WriteResult(
+            success=True,
+            grib_path=original_path,
+            variable=var_name,
+            step_index=step_index,
+            ensemble_slice=(0, actual_ensemble),
+            elapsed_ms=elapsed_ms,
+        )
+        
+    except Exception as e:
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        logger.error(f"Direct write failed for {original_path}: {e}")
+        return WriteResult(
+            success=False,
+            grib_path=original_path,
+            variable='unknown',
+            step_index=-1,
+            ensemble_slice=(0, 0),
+            elapsed_ms=elapsed_ms,
+            error=str(e),
+        )
+
+
+def open_zarr_arrays(zarr_store_path: str, variables: list[str] = None) -> dict:
+    """Open zarr arrays for direct writing (bypassing xarray).
+    
+    Call this once per batch, then pass to write_grib_to_zarr_direct().
+    
+    Parameters
+    ----------
+    zarr_store_path : str
+        Path to the zarr store.
+    variables : list[str], optional
+        Variables to open. If None, opens all data variables.
+    
+    Returns
+    -------
+    dict
+        Dict mapping variable names to zarr arrays.
+    """
+    store = zarr.open(zarr_store_path, mode='r+')
+    
+    if variables is None:
+        # Get all array names (excluding coordinates)
+        variables = [k for k in store.array_keys() 
+                    if k not in ('step', 'number', 'latitude', 'longitude', 'time', 'valid_time')]
+    
+    arrays = {}
+    for var in variables:
+        if var in store:
+            arrays[var] = store[var]
+            logger.debug(f"Opened zarr array: {var} with shape {store[var].shape}")
+    
+    return arrays
+
+
 def cleanup_staging_dir(staging_dir: str = DEFAULT_STAGING_DIR) -> None:
     """Remove all files from the staging directory.
     

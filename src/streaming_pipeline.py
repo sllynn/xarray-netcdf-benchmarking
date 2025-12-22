@@ -150,7 +150,12 @@ def create_streaming_pipeline(
         4. Syncs to cloud storage after processing
         5. Cleans up staged files
         """
-        from .region_writer import stage_files_with_azcopy, cleanup_staging_dir
+        from .region_writer import (
+            stage_files_with_azcopy, 
+            cleanup_staging_dir,
+            open_zarr_arrays,
+            write_grib_to_zarr_direct,
+        )
         
         batch_start = time.perf_counter()
         
@@ -187,21 +192,24 @@ def create_streaming_pipeline(
             staged_paths = {fp: fp for fp in file_paths}
             stage_time = (time.perf_counter() - stage_start) * 1000
         
-        # Process files in parallel (now reading from local SSD)
+        # Open zarr arrays ONCE for the entire batch (bypasses xarray overhead)
         process_start = time.perf_counter()
+        zarr_arrays = open_zarr_arrays(config.zarr_store_path)
+        logger.info(f"Batch {batch_id}: Opened zarr arrays: {list(zarr_arrays.keys())}")
+        
         results = []
         errors = []
         
+        # Process files in parallel using direct zarr writes (no locking!)
         with ThreadPoolExecutor(max_workers=config.num_workers) as executor:
             futures = {}
             for original_path in file_paths:
                 local_path = staged_paths.get(original_path, original_path)
                 future = executor.submit(
-                    write_grib_to_zarr_region,
+                    write_grib_to_zarr_direct,
                     local_path,  # Use local staged path
-                    config.zarr_store_path,
+                    zarr_arrays,  # Shared zarr arrays (no locking needed)
                     hour_to_index,
-                    stage_locally=False,  # Already staged!
                 )
                 futures[future] = original_path  # Track original path for reporting
             

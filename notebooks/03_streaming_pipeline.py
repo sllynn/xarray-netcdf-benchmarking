@@ -40,7 +40,7 @@ CHECKPOINT_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/checkpoints/grib_p
 
 # Processing parameters
 MAX_FILES_PER_BATCH = 32
-NUM_WORKERS = 32
+NUM_WORKERS = 8  # Reduced from 32 to avoid Zarr lock contention
 TRIGGER_INTERVAL = "0 seconds"  # Process immediately (no buffering)
 
 # COMMAND ----------
