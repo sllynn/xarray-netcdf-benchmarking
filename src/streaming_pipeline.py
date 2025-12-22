@@ -166,6 +166,7 @@ def create_streaming_pipeline(
             stage_files_with_azcopy,
             stage_files_with_azure_sdk,
             download_single_file_azure_sdk,
+            download_single_file_azcopy,
             cleanup_staging_dir,
             open_zarr_arrays,
             write_grib_to_zarr_direct,
@@ -206,14 +207,21 @@ def create_streaming_pipeline(
             # STREAM MODE: Each worker downloads and processes its own file
             # This enables download+process pipelining for better per-file latency
             
+            # Choose download function based on staging_method
+            download_func = (
+                download_single_file_azcopy 
+                if config.staging_method == 'azcopy' 
+                else download_single_file_azure_sdk
+            )
+            
             def download_and_process(volume_path):
                 """Download a single file and process it immediately."""
                 import time as _time
                 task_start = _time.perf_counter()
                 
                 try:
-                    # Download single file
-                    local_path = download_single_file_azure_sdk(
+                    # Download single file (using configured method)
+                    local_path = download_func(
                         volume_path, 
                         token_manager=staging_token_manager
                     )

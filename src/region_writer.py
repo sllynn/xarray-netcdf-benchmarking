@@ -800,6 +800,102 @@ def stage_files_with_azcopy(
         raise
 
 
+def download_single_file_azcopy(
+    volume_path: str,
+    staging_dir: str = DEFAULT_STAGING_DIR,
+    token_manager: Optional['TokenManager'] = None,
+) -> str:
+    """Download a single file from Azure Blob Storage using azcopy.
+    
+    For single files, azcopy has minimal startup overhead (~200-500ms)
+    compared to the ~15s overhead when planning multi-file batch operations.
+    
+    Parameters
+    ----------
+    volume_path : str
+        Volume path (e.g., /Volumes/catalog/schema/volume/path/file.grib2).
+    staging_dir : str
+        Local directory to download to.
+    token_manager : TokenManager, optional
+        Shared TokenManager for SAS tokens.
+    
+    Returns
+    -------
+    str
+        Local path to the downloaded file.
+    """
+    import subprocess
+    import time
+    from pathlib import Path as PathLib
+    from .cloud_sync import TokenManager, ensure_azcopy
+    
+    start_time = time.perf_counter()
+    
+    os.makedirs(staging_dir, exist_ok=True)
+    
+    # Parse volume path
+    parts = PathLib(volume_path).parts
+    if len(parts) < 5 or parts[1] != 'Volumes':
+        raise ValueError(f"Expected /Volumes/catalog/schema/volume/... path, got: {volume_path}")
+    
+    catalog, schema, volume = parts[2], parts[3], parts[4]
+    volume_name = f"{catalog}.{schema}.{volume}"
+    volume_prefix = f"/Volumes/{catalog}/{schema}/{volume}"
+    
+    # Get or create token manager
+    if token_manager is None:
+        token_manager = TokenManager(volume_name)
+    
+    # Get storage info
+    from databricks.sdk import WorkspaceClient
+    w = WorkspaceClient()
+    volume_info = w.volumes.read(volume_name)
+    storage_location = volume_info.storage_location
+    
+    from urllib.parse import urlparse
+    parsed = urlparse(storage_location)
+    container, host_rest = parsed.netloc.split('@', 1)
+    storage_account = host_rest.split('.')[0]
+    volume_base_path = parsed.path.lstrip('/')
+    
+    # Get SAS token
+    sas_url = token_manager.get_sas_url()
+    sas_token = sas_url.split('?', 1)[1] if '?' in sas_url else ''
+    
+    # Build blob URL
+    rel_path = volume_path[len(volume_prefix):].lstrip('/')
+    if volume_base_path:
+        blob_path = f"{volume_base_path}/{rel_path}"
+    else:
+        blob_path = rel_path
+    
+    source_url = f"https://{storage_account}.blob.core.windows.net/{container}/{blob_path}?{sas_token}"
+    
+    # Local path
+    source_dir_name = volume_base_path.rstrip('/').split('/')[-1] if volume_base_path else ''
+    local_path = os.path.join(staging_dir, source_dir_name, rel_path)
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    
+    # Run azcopy
+    azcopy_path = ensure_azcopy()
+    cmd = [
+        azcopy_path, 'copy',
+        source_url,
+        local_path,
+        '--output-level', 'quiet',
+    ]
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    
+    if result.returncode != 0:
+        raise RuntimeError(f"azcopy failed: {result.stderr}")
+    
+    elapsed_ms = (time.perf_counter() - start_time) * 1000
+    logger.debug(f"Downloaded {os.path.basename(volume_path)} via azcopy in {elapsed_ms:.0f}ms")
+    
+    return local_path
+
+
 def download_single_file_azure_sdk(
     volume_path: str,
     staging_dir: str = DEFAULT_STAGING_DIR,
