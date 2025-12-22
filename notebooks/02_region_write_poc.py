@@ -330,3 +330,26 @@ if results:
         else:
             print(f"\n✗ FAIL: Average write time {avg_time:.1f}ms/file >= {target_time_ms}ms target")
 
+
+# COMMAND ----------
+
+target_time_ms = 500.0
+
+if results_with_stage:
+    write_times = [r.elapsed_ms for r in results_with_stage if r.success]
+    
+    if write_times:
+        avg_time = sum(write_times) / len(write_times)
+        max_time = max(write_times)
+        min_time = min(write_times)
+        
+        print(f"Write time statistics (per file, n={len(write_times)}):")
+        print(f"  Average: {avg_time:.1f}ms/file")
+        print(f"  Min: {min_time:.1f}ms/file")
+        print(f"  Max: {max_time:.1f}ms/file")
+        
+        if avg_time < target_time_ms:
+            print(f"\n✓ PASS: Average write time {avg_time:.1f}ms/file < {target_time_ms}ms target")
+        else:
+            print(f"\n✗ FAIL: Average write time {avg_time:.1f}ms/file >= {target_time_ms}ms target")
+
