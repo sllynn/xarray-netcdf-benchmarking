@@ -22,9 +22,12 @@ import tempfile
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Union, TYPE_CHECKING
 from dataclasses import dataclass
 import logging
+
+if TYPE_CHECKING:
+    from .cloud_sync import TokenManager
 
 try:
     import eccodes
@@ -628,6 +631,7 @@ def stage_files_batch(
 def stage_files_with_azcopy(
     file_paths: list[str],
     staging_dir: str = DEFAULT_STAGING_DIR,
+    token_manager: Optional['TokenManager'] = None,
 ) -> dict[str, str]:
     """Stage files from cloud storage to local SSD using azcopy.
     
@@ -643,6 +647,9 @@ def stage_files_with_azcopy(
         List of file paths (e.g., /Volumes/catalog/schema/volume/path/file.grib2).
     staging_dir : str
         Local directory to copy files to.
+    token_manager : TokenManager, optional
+        Shared TokenManager instance to avoid recreating tokens each batch.
+        If not provided, a new one is created (triggers token refresh).
     
     Returns
     -------
@@ -675,8 +682,9 @@ def stage_files_with_azcopy(
     logger.info(f"Staging {len(file_paths)} files from volume {volume_name} using azcopy")
     
     try:
-        # Get token and Azure URL for the volume
-        token_manager = TokenManager(volume_name)
+        # Use provided token manager or create new one
+        if token_manager is None:
+            token_manager = TokenManager(volume_name)
         
         # Get the storage location from Volume metadata
         from databricks.sdk import WorkspaceClient
@@ -796,6 +804,7 @@ def stage_files_with_azure_sdk(
     file_paths: list[str],
     staging_dir: str = DEFAULT_STAGING_DIR,
     max_concurrency: int = 32,
+    token_manager: Optional['TokenManager'] = None,
 ) -> dict[str, str]:
     """Stage files from Azure Blob Storage to local SSD using Azure SDK.
     
@@ -810,6 +819,9 @@ def stage_files_with_azure_sdk(
         Local directory to copy files to.
     max_concurrency : int
         Maximum concurrent downloads (default: 32).
+    token_manager : TokenManager, optional
+        Shared TokenManager instance to avoid recreating tokens each batch.
+        If not provided, a new one is created (triggers token refresh).
     
     Returns
     -------
@@ -840,8 +852,9 @@ def stage_files_with_azure_sdk(
     logger.info(f"Staging {len(file_paths)} files from volume {volume_name} using Azure SDK")
     
     try:
-        # Get token and storage info
-        token_manager = TokenManager(volume_name)
+        # Use provided token manager or create new one
+        if token_manager is None:
+            token_manager = TokenManager(volume_name)
         
         from databricks.sdk import WorkspaceClient
         w = WorkspaceClient()

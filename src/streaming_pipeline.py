@@ -127,7 +127,7 @@ def create_streaming_pipeline(
     """
     from .zarr_init import generate_forecast_steps, build_hour_to_index_map
     from .region_writer import write_grib_to_zarr_region
-    from .cloud_sync import CloudSyncer
+    from .cloud_sync import CloudSyncer, TokenManager
     
     # Initialize hour-to-index mapping if not provided
     if hour_to_index is None:
@@ -137,6 +137,9 @@ def create_streaming_pipeline(
     # Initialize cloud syncer if not provided
     if cloud_syncer is None and config.sync_after_each_batch:
         cloud_syncer = CloudSyncer.from_volume_path(config.cloud_destination)
+    
+    # Create a shared TokenManager for staging (avoids token refresh every batch)
+    staging_token_manager = TokenManager.from_volume_path(config.landing_zone)
     
     logger.info(f"Creating streaming pipeline:")
     logger.info(f"  Landing zone: {config.landing_zone}")
@@ -187,12 +190,13 @@ def create_streaming_pipeline(
         logger.info(f"Batch {batch_id}: Processing {len(file_paths)} GRIB files")
         
         # Stage all files to local SSD (method configurable)
+        # Use shared token_manager to avoid refreshing token every batch
         stage_start = time.perf_counter()
         try:
             if config.staging_method == 'azure_sdk':
-                staged_paths = stage_files_with_azure_sdk(file_paths)
+                staged_paths = stage_files_with_azure_sdk(file_paths, token_manager=staging_token_manager)
             else:  # default to azcopy
-                staged_paths = stage_files_with_azcopy(file_paths)
+                staged_paths = stage_files_with_azcopy(file_paths, token_manager=staging_token_manager)
             stage_time = (time.perf_counter() - stage_start) * 1000
             logger.info(f"Batch {batch_id}: Staged {len(staged_paths)} files in {stage_time:.0f}ms via {config.staging_method}")
         except Exception as e:
