@@ -308,20 +308,22 @@ class TokenManager:
         return self._token_info.expiration if self._token_info else None
     
     @property
-    def storage_account(self) -> Optional[str]:
-        """Get the storage account name."""
-        return self._token_info.storage_account if self._token_info else None
-    
-    @property
-    def container(self) -> Optional[str]:
-        """Get the container name."""
-        return self._token_info.container if self._token_info else None
-    
-    @property
-    def base_path(self) -> Optional[str]:
-        """Get the base path within the container."""
+    def storage_account(self) -> str:
+        """Get the storage account name (thread-safe, ensures token is valid)."""
         self._ensure_valid_token()
-        return self._token_info.base_path if self._token_info else None
+        return self._token_info.storage_account
+    
+    @property
+    def container(self) -> str:
+        """Get the container name (thread-safe, ensures token is valid)."""
+        self._ensure_valid_token()
+        return self._token_info.container
+    
+    @property
+    def base_path(self) -> str:
+        """Get the base path within the container (thread-safe, ensures token is valid)."""
+        self._ensure_valid_token()
+        return self._token_info.base_path
 
 
 def find_azcopy() -> Optional[str]:
