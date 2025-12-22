@@ -153,7 +153,7 @@ print(f"  Status: {manager.status}")
 import time
 
 # Monitor for a period of time
-monitor_duration = 60  # seconds
+monitor_duration = 300  # seconds
 check_interval = 5  # seconds
 
 print(f"Monitoring pipeline for {monitor_duration} seconds...")
@@ -191,8 +191,8 @@ print(f"\nFinal metrics: {manager.get_metrics()}")
 # COMMAND ----------
 
 # Stop the pipeline when you're done
-# manager.stop()
-# print("✓ Pipeline stopped")
+manager.stop()
+print("✓ Pipeline stopped")
 
 # COMMAND ----------
 
