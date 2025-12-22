@@ -76,6 +76,10 @@ logging.getLogger('py4j').setLevel(logging.WARNING)
 logging.getLogger('py4j.clientserver').setLevel(logging.WARNING)
 logging.getLogger('py4j.java_gateway').setLevel(logging.WARNING)
 
+# Suppress Azure SDK HTTP logging (extremely verbose)
+logging.getLogger('azure.core.pipeline.policies.http_logging_policy').setLevel(logging.WARNING)
+logging.getLogger('azure.core').setLevel(logging.WARNING)
+
 print("✓ Logging configured")
 
 # COMMAND ----------
