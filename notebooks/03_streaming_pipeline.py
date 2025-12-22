@@ -257,46 +257,46 @@ print("✓ Pipeline stopped")
 
 # COMMAND ----------
 
-# List files for batch processing
-from pyspark.sql.functions import col
+# # List files for batch processing
+# from pyspark.sql.functions import col
 
-# Get list of GRIB files (filter to exclude .idx sidecar files and other artifacts)
-grib_files = (
-    spark.read.format("binaryFile")
-    .option("pathGlobFilter", "*.{grib,grib2,grb,grb2}")
-    .load(LANDING_ZONE)
-)
-file_paths = [row.path for row in grib_files.select("path").collect()]
+# # Get list of GRIB files (filter to exclude .idx sidecar files and other artifacts)
+# grib_files = (
+#     spark.read.format("binaryFile")
+#     .option("pathGlobFilter", "*.{grib,grib2,grb,grb2}")
+#     .load(LANDING_ZONE)
+# )
+# file_paths = [row.path for row in grib_files.select("path").collect()]
 
-print(f"Found {len(file_paths)} GRIB files for batch processing")
+# print(f"Found {len(file_paths)} GRIB files for batch processing")
 
 # COMMAND ----------
 
-# Run batch processing (non-streaming)
-if file_paths:
-    # Convert to local paths
-    local_paths = [p.replace("dbfs:", "/dbfs") for p in file_paths[:20]]  # Limit for testing
+# # Run batch processing (non-streaming)
+# if file_paths:
+#     # Convert to local paths
+#     local_paths = [p.replace("dbfs:", "/dbfs") for p in file_paths[:20]]  # Limit for testing
     
-    print(f"Processing {len(local_paths)} files in batch mode...")
+#     print(f"Processing {len(local_paths)} files in batch mode...")
     
-    batch_result = run_batch_processing(
-        spark=spark,
-        config=config,
-        file_paths=local_paths,
-    )
+#     batch_result = run_batch_processing(
+#         spark=spark,
+#         config=config,
+#         file_paths=local_paths,
+#     )
     
-    print(f"\n✓ Batch complete")
-    print(f"  Files processed: {batch_result.files_processed}")
-    print(f"  Successful: {batch_result.files_successful}")
-    print(f"  Failed: {batch_result.files_failed}")
-    print(f"  Processing time: {batch_result.processing_time_ms:.1f}ms")
-    print(f"  Sync time: {batch_result.sync_time_ms:.1f}ms")
-    print(f"  Total time: {batch_result.total_time_ms:.1f}ms")
+#     print(f"\n✓ Batch complete")
+#     print(f"  Files processed: {batch_result.files_processed}")
+#     print(f"  Successful: {batch_result.files_successful}")
+#     print(f"  Failed: {batch_result.files_failed}")
+#     print(f"  Processing time: {batch_result.processing_time_ms:.1f}ms")
+#     print(f"  Sync time: {batch_result.sync_time_ms:.1f}ms")
+#     print(f"  Total time: {batch_result.total_time_ms:.1f}ms")
     
-    if batch_result.errors:
-        print(f"\nErrors:")
-        for error in batch_result.errors[:5]:
-            print(f"  {error}")
+#     if batch_result.errors:
+#         print(f"\nErrors:")
+#         for error in batch_result.errors[:5]:
+#             print(f"  {error}")
 
 # COMMAND ----------
 
