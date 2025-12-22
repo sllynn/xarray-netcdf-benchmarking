@@ -46,6 +46,31 @@ TRIGGER_INTERVAL = "0 seconds"  # Process immediately (no buffering)
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Configure Logging
+# MAGIC
+# MAGIC Enable logging output so we can see timing information in the notebook.
+
+# COMMAND ----------
+
+import logging
+
+# Configure logging to show INFO level messages from our modules
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(name)s: %(message)s',
+    datefmt='%H:%M:%S'
+)
+
+# Ensure our module loggers are at INFO level
+logging.getLogger('src.region_writer').setLevel(logging.INFO)
+logging.getLogger('src.streaming_pipeline').setLevel(logging.INFO)
+logging.getLogger('src.cloud_sync').setLevel(logging.INFO)
+
+print("✓ Logging configured")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Import Libraries
 
 # COMMAND ----------
