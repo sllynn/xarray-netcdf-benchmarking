@@ -192,6 +192,12 @@ print(f"  Staging method: {config.staging_method}")
 
 # COMMAND ----------
 
+from src.region_writer import cleanup_staging_dir, DEFAULT_STAGING_DIR
+
+# Clear any leftover files from previous runs
+cleanup_staging_dir(DEFAULT_STAGING_DIR)
+print(f"✓ Cleared staging directory: {DEFAULT_STAGING_DIR}")
+
 # Create pipeline manager
 manager = PipelineManager(spark, config)
 
