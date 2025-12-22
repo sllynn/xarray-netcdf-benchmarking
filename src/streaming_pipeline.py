@@ -145,9 +145,13 @@ def create_streaming_pipeline(
         
         This function:
         1. Collects file paths from the batch DataFrame
-        2. Processes files in parallel using ThreadPoolExecutor
-        3. Syncs to cloud storage after processing
+        2. Batch-stages files to local SSD using azcopy (much faster than FUSE)
+        3. Processes files in parallel using ThreadPoolExecutor
+        4. Syncs to cloud storage after processing
+        5. Cleans up staged files
         """
+        from .region_writer import stage_files_with_azcopy, cleanup_staging_dir
+        
         batch_start = time.perf_counter()
         
         # Collect file paths to driver
@@ -171,39 +175,61 @@ def create_streaming_pipeline(
         
         logger.info(f"Batch {batch_id}: Processing {len(file_paths)} GRIB files")
         
-        # Process files in parallel
+        # Stage all files to local SSD using azcopy (batch operation)
+        stage_start = time.perf_counter()
+        try:
+            staged_paths = stage_files_with_azcopy(file_paths)
+            stage_time = (time.perf_counter() - stage_start) * 1000
+            logger.info(f"Batch {batch_id}: Staged {len(staged_paths)} files in {stage_time:.0f}ms")
+        except Exception as e:
+            logger.error(f"Batch {batch_id}: azcopy staging failed: {e}, falling back to FUSE")
+            # Fallback: process directly from cloud (slower)
+            staged_paths = {fp: fp for fp in file_paths}
+            stage_time = (time.perf_counter() - stage_start) * 1000
+        
+        # Process files in parallel (now reading from local SSD)
         process_start = time.perf_counter()
         results = []
         errors = []
         
         with ThreadPoolExecutor(max_workers=config.num_workers) as executor:
-            futures = {
-                executor.submit(
+            futures = {}
+            for original_path in file_paths:
+                local_path = staged_paths.get(original_path, original_path)
+                future = executor.submit(
                     write_grib_to_zarr_region,
-                    file_path,
+                    local_path,  # Use local staged path
                     config.zarr_store_path,
                     hour_to_index,
-                ): file_path
-                for file_path in file_paths
-            }
+                    stage_locally=False,  # Already staged!
+                )
+                futures[future] = original_path  # Track original path for reporting
             
             for future in as_completed(futures):
-                file_path = futures[future]
+                original_path = futures[future]
                 try:
                     result = future.result()
+                    # Update result to show original path
+                    result.grib_path = original_path
                     results.append(result)
                     if not result.success:
-                        errors.append(f"{file_path}: {result.error}")
+                        errors.append(f"{original_path}: {result.error}")
                 except Exception as e:
-                    logger.error(f"Error processing {file_path}: {e}")
-                    errors.append(f"{file_path}: {str(e)}")
+                    logger.error(f"Error processing {original_path}: {e}")
+                    errors.append(f"{original_path}: {str(e)}")
         
         processing_time = (time.perf_counter() - process_start) * 1000
         successful = sum(1 for r in results if r.success)
         
+        # Clean up staged files
+        try:
+            cleanup_staging_dir()
+        except Exception as e:
+            logger.warning(f"Batch {batch_id}: Failed to cleanup staging dir: {e}")
+        
         logger.info(
             f"Batch {batch_id}: Processed {successful}/{len(file_paths)} files "
-            f"in {processing_time:.1f}ms"
+            f"(stage={stage_time:.0f}ms, process={processing_time:.0f}ms)"
         )
         
         # Sync to cloud storage
@@ -240,7 +266,8 @@ def create_streaming_pipeline(
         logger.info(
             f"Batch {batch_id} complete: "
             f"{batch_result.files_successful}/{batch_result.files_processed} files, "
-            f"total time: {total_time:.1f}ms"
+            f"stage={stage_time:.0f}ms, process={processing_time:.0f}ms, sync={sync_time:.0f}ms, "
+            f"total={total_time:.0f}ms"
         )
         
         # Call completion callback if provided

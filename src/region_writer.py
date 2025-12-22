@@ -625,6 +625,139 @@ def stage_files_batch(
     return staged_paths
 
 
+def stage_files_with_azcopy(
+    file_paths: list[str],
+    staging_dir: str = DEFAULT_STAGING_DIR,
+) -> dict[str, str]:
+    """Stage files from cloud storage to local SSD using azcopy.
+    
+    Uses azcopy's --include-path option to download multiple files in a single
+    command, which is much faster than individual downloads.
+    
+    See: https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azcopy-files
+    
+    Parameters
+    ----------
+    file_paths : list[str]
+        List of file paths (e.g., /Volumes/catalog/schema/volume/path/file.grib2).
+    staging_dir : str
+        Local directory to copy files to.
+    
+    Returns
+    -------
+    dict[str, str]
+        Mapping from original path to local staged path.
+    """
+    import subprocess
+    import time
+    from pathlib import Path as PathLib
+    from .cloud_sync import TokenManager, ensure_azcopy
+    
+    if not file_paths:
+        return {}
+    
+    os.makedirs(staging_dir, exist_ok=True)
+    
+    # Extract volume info from first path: /Volumes/catalog/schema/volume/...
+    first_path = file_paths[0]
+    parts = PathLib(first_path).parts
+    
+    if len(parts) < 5 or parts[1] != 'Volumes':
+        raise ValueError(f"Expected /Volumes/catalog/schema/volume/... path, got: {first_path}")
+    
+    catalog, schema, volume = parts[2], parts[3], parts[4]
+    volume_name = f"{catalog}.{schema}.{volume}"
+    
+    # Get the base path within the volume (everything after /Volumes/cat/schema/vol/)
+    volume_prefix = f"/Volumes/{catalog}/{schema}/{volume}"
+    
+    logger.info(f"Staging {len(file_paths)} files from volume {volume_name} using azcopy")
+    
+    try:
+        # Get token and Azure URL for the volume
+        token_manager = TokenManager(volume_name)
+        
+        # Get the storage location from Volume metadata
+        from databricks.sdk import WorkspaceClient
+        w = WorkspaceClient()
+        volume_info = w.volumes.read(volume_name)
+        storage_location = volume_info.storage_location  # abfss://container@account.dfs.core.windows.net/path
+        
+        # Parse the storage URL
+        from urllib.parse import urlparse
+        parsed = urlparse(storage_location)
+        container, host_rest = parsed.netloc.split('@', 1)
+        storage_account = host_rest.split('.')[0]
+        volume_base_path = parsed.path.lstrip('/')
+        
+        # Get SAS token
+        sas_url = token_manager.get_sas_url()
+        # Extract just the SAS token part (after ?)
+        sas_token = sas_url.split('?', 1)[1] if '?' in sas_url else ''
+        
+        # Ensure azcopy is available
+        azcopy_path = ensure_azcopy()
+        
+        start_time = time.perf_counter()
+        
+        # Build the --include-path argument: semicolon-separated relative paths
+        # Each path is relative to the volume root (volume_base_path)
+        relative_paths = []
+        staged_paths = {}
+        
+        for fpath in file_paths:
+            # Get the relative path within the volume
+            rel_path = fpath[len(volume_prefix):].lstrip('/')
+            relative_paths.append(rel_path)
+            
+            # Track the mapping (azcopy will preserve the filename)
+            local_path = os.path.join(staging_dir, PathLib(fpath).name)
+            staged_paths[fpath] = local_path
+        
+        # Build the source URL (volume root with SAS token)
+        source_url = f"https://{storage_account}.blob.core.windows.net/{container}/{volume_base_path}?{sas_token}"
+        
+        # Build semicolon-separated list of relative paths
+        include_path = ';'.join(relative_paths)
+        
+        # Run single azcopy command with --include-path
+        # azcopy copy '<source>?<sas>' '<dest>' --include-path 'file1;file2;file3'
+        cmd = [
+            azcopy_path, 'copy',
+            source_url,
+            staging_dir,
+            '--include-path', include_path,
+            '--output-level', 'quiet',
+        ]
+        
+        logger.debug(f"Running azcopy with {len(relative_paths)} files in --include-path")
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            # Log stderr for debugging
+            logger.error(f"azcopy stderr: {result.stderr}")
+            raise RuntimeError(f"azcopy failed with code {result.returncode}: {result.stderr}")
+        
+        total_elapsed = (time.perf_counter() - start_time) * 1000
+        
+        # Verify files were downloaded
+        missing = [fp for fp, lp in staged_paths.items() if not os.path.exists(lp)]
+        if missing:
+            logger.warning(f"azcopy completed but {len(missing)} files missing: {missing[:3]}...")
+        
+        logger.info(
+            f"Staged {len(file_paths)} files in {total_elapsed:.0f}ms "
+            f"({total_elapsed/len(file_paths):.0f}ms/file avg) via azcopy"
+        )
+        
+        return staged_paths
+        
+    except Exception as e:
+        logger.error(f"azcopy staging failed: {e}")
+        raise
+
+
 def cleanup_staging_dir(staging_dir: str = DEFAULT_STAGING_DIR) -> None:
     """Remove all files from the staging directory.
     
