@@ -749,7 +749,10 @@ def stage_files_with_azcopy(
         logger.info(f"  destination: {staging_dir}")
         logger.info(f"  include-path ({len(relative_paths)} files): {include_path[:200]}{'...' if len(include_path) > 200 else ''}")
         
+        azcopy_start = time.perf_counter()
         result = subprocess.run(cmd, capture_output=True, text=True)
+        azcopy_elapsed = (time.perf_counter() - azcopy_start) * 1000
+        logger.info(f"azcopy subprocess wall time: {azcopy_elapsed:.0f}ms")
         
         # Log azcopy output
         if result.stdout:
