@@ -145,10 +145,6 @@ except Exception as e:
     # Checkpoint may not exist yet on first run
     print(f"Note: Could not clear checkpoint (may not exist yet): {e}")
 
-# Also clear local Zarr store if you want a fresh start
-shutil.rmtree(LOCAL_ZARR_PATH, ignore_errors=True)
-print(f"✓ Cleared local Zarr store: {LOCAL_ZARR_PATH}")
-
 # COMMAND ----------
 
 # MAGIC %md
