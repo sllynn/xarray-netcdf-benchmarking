@@ -702,26 +702,36 @@ def stage_files_with_azcopy(
         
         start_time = time.perf_counter()
         
-        # Build the --include-path argument and track where files will end up
-        # azcopy preserves the relative path structure in the destination
-        relative_paths = []
+        # Build the --include-path argument with full blob paths (relative to container)
+        # azcopy preserves the path structure in the destination
+        blob_paths = []
         staged_paths = {}
         
         for fpath in file_paths:
             # Get the relative path within the volume
             # /Volumes/stuart/lseg/netcdf/landing/file.grib2 -> landing/file.grib2
             rel_path = fpath[len(volume_prefix):].lstrip('/')
-            relative_paths.append(rel_path)
             
-            # azcopy preserves directory structure, so local path includes rel_path
-            local_path = os.path.join(staging_dir, rel_path)
+            # Build full blob path: volume_base_path + rel_path
+            # e.g., lseg/netcdf + landing/file.grib2 = lseg/netcdf/landing/file.grib2
+            if volume_base_path:
+                full_blob_path = f"{volume_base_path}/{rel_path}"
+            else:
+                full_blob_path = rel_path
+            blob_paths.append(full_blob_path)
+            
+            # azcopy preserves directory structure, so local path includes full blob path
+            local_path = os.path.join(staging_dir, full_blob_path)
             staged_paths[fpath] = local_path
         
-        # Build the source URL (volume root with SAS token)
-        source_url = f"https://{storage_account}.blob.core.windows.net/{container}/{volume_base_path}?{sas_token}"
+        # Build the source URL (container root with SAS token)
+        source_url = f"https://{storage_account}.blob.core.windows.net/{container}?{sas_token}"
         
-        # Build semicolon-separated list of relative paths
-        include_path = ';'.join(relative_paths)
+        # Build semicolon-separated list of full blob paths
+        include_path = ';'.join(blob_paths)
+        
+        logger.debug(f"Source URL: https://{storage_account}.blob.core.windows.net/{container}")
+        logger.debug(f"Include paths (first 3): {blob_paths[:3]}")
         
         # Run single azcopy command with --include-path
         cmd = [
@@ -732,7 +742,7 @@ def stage_files_with_azcopy(
             '--output-level', 'quiet',
         ]
         
-        logger.debug(f"Running azcopy with {len(relative_paths)} files in --include-path")
+        logger.debug(f"Running azcopy with {len(blob_paths)} files in --include-path")
         
         result = subprocess.run(cmd, capture_output=True, text=True)
         
