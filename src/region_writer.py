@@ -111,6 +111,7 @@ def stage_file_locally(
     str
         Path to the local copy of the file.
     """
+    import time
     remote_path = str(remote_path)
     
     # Volumes are accessed directly at /Volumes/... (FUSE mount)
@@ -125,8 +126,18 @@ def stage_file_locally(
     filename = Path(remote_path).name
     local_path = os.path.join(staging_dir, filename)
     
-    # Copy to local
+    # Copy to local with timing
+    t0 = time.perf_counter()
     shutil.copy2(fuse_path, local_path)
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    
+    # Log with file size for throughput analysis
+    file_size_mb = os.path.getsize(local_path) / (1024 * 1024)
+    throughput_mbps = file_size_mb / (elapsed_ms / 1000) if elapsed_ms > 0 else 0
+    logger.debug(
+        f"Staged {filename}: {file_size_mb:.1f}MB in {elapsed_ms:.0f}ms "
+        f"({throughput_mbps:.1f}MB/s)"
+    )
     
     return local_path
 
@@ -426,6 +437,7 @@ def write_grib_to_zarr_region(
     """
     import time
     start_time = time.perf_counter()
+    timing = {}  # Track timing breakdown
     
     original_grib_path = str(grib_path)
     zarr_store_path = str(zarr_store_path)
@@ -438,17 +450,21 @@ def write_grib_to_zarr_region(
     
     try:
         # Stage file locally for faster reading
+        t0 = time.perf_counter()
         if stage_locally:
             local_grib_path = stage_file_locally(original_grib_path, staging_dir)
             grib_path = local_grib_path
         else:
             grib_path = original_grib_path
+        timing['stage_ms'] = (time.perf_counter() - t0) * 1000
         
         # Read GRIB data
+        t0 = time.perf_counter()
         if use_cfgrib:
             data, metadata = read_grib_with_cfgrib(grib_path)
         else:
             data, metadata = read_grib_data(grib_path)
+        timing['read_ms'] = (time.perf_counter() - t0) * 1000
         
         # Validate reference time if expected
         if expected_reference_time is not None:
@@ -467,7 +483,9 @@ def write_grib_to_zarr_region(
         step_index = hour_to_index[metadata.forecast_hour]
         
         # Open Zarr store
+        t0 = time.perf_counter()
         ds = xr.open_zarr(zarr_store_path, consolidated=True)
+        timing['zarr_open_ms'] = (time.perf_counter() - t0) * 1000
         
         # Verify variable exists
         var_name = metadata.variable
@@ -513,17 +531,32 @@ def write_grib_to_zarr_region(
         }
         
         # Perform region write
+        t0 = time.perf_counter()
         write_ds.to_zarr(
             zarr_store_path,
             mode='r+',
             region=region,
         )
+        timing['zarr_write_ms'] = (time.perf_counter() - t0) * 1000
         
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         
         # Cleanup staged file
+        t0 = time.perf_counter()
         if cleanup_staged and local_grib_path:
             cleanup_staged_file(local_grib_path, staging_dir)
+        timing['cleanup_ms'] = (time.perf_counter() - t0) * 1000
+        
+        # Log timing breakdown (INFO level for visibility)
+        logger.info(
+            f"Timing for {Path(original_grib_path).name}: "
+            f"stage={timing.get('stage_ms', 0):.0f}ms, "
+            f"read={timing.get('read_ms', 0):.0f}ms, "
+            f"zarr_open={timing.get('zarr_open_ms', 0):.0f}ms, "
+            f"write={timing.get('zarr_write_ms', 0):.0f}ms, "
+            f"cleanup={timing.get('cleanup_ms', 0):.0f}ms, "
+            f"total={elapsed_ms:.0f}ms"
+        )
         
         return WriteResult(
             success=True,
