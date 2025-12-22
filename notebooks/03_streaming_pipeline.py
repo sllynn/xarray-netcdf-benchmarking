@@ -43,10 +43,15 @@ MAX_FILES_PER_BATCH = 32
 NUM_WORKERS = 32  # Direct zarr writes don't have lock contention
 TRIGGER_INTERVAL = "0 seconds"  # Process immediately (no buffering)
 
-# Staging method: 'azcopy' or 'azure_sdk'
+# Staging method: 'azcopy' or 'azure_sdk' (only used in batch_stage mode)
 # - 'azcopy': ~15s startup overhead, but very fast bulk transfers (good for large batches)
 # - 'azure_sdk': No startup overhead, uses async HTTP (better for smaller batches)
-STAGING_METHOD = "azure_sdk"  # Toggle to experiment!
+STAGING_METHOD = "azure_sdk"
+
+# Processing mode: 'batch_stage' or 'stream'
+# - 'batch_stage': Download all files first, then process all (traditional)
+# - 'stream': Each worker downloads and processes its own file (pipelined, better per-file latency)
+PROCESSING_MODE = "stream"  # Toggle to experiment!
 
 # COMMAND ----------
 
@@ -172,6 +177,7 @@ config = PipelineConfig(
     use_file_notification=True,  # Low-latency file discovery
     sync_after_each_batch=True,  # Sync to cloud after each batch
     staging_method=STAGING_METHOD,  # 'azcopy' or 'azure_sdk'
+    processing_mode=PROCESSING_MODE,  # 'batch_stage' or 'stream'
 )
 
 print("Pipeline Configuration:")
@@ -182,6 +188,7 @@ print(f"  Max files per batch: {config.max_files_per_batch}")
 print(f"  Workers: {config.num_workers}")
 print(f"  Trigger: {config.trigger_interval}")
 print(f"  Staging method: {config.staging_method}")
+print(f"  Processing mode: {config.processing_mode}")
 
 # COMMAND ----------
 

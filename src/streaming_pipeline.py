@@ -52,6 +52,10 @@ class PipelineConfig:
         Method to stage files from cloud storage: 'azcopy' or 'azure_sdk'.
         'azcopy' has ~15s overhead but fast transfers.
         'azure_sdk' has no startup overhead, uses async HTTP.
+    processing_mode : str
+        How to process files: 'batch_stage' or 'stream'.
+        'batch_stage': Download all files first, then process all (default).
+        'stream': Each worker downloads and processes its own file (pipelined).
     """
     landing_zone: str
     zarr_store_path: str
@@ -63,6 +67,7 @@ class PipelineConfig:
     use_file_notification: bool = True
     sync_after_each_batch: bool = True
     staging_method: str = 'azcopy'  # 'azcopy' or 'azure_sdk'
+    processing_mode: str = 'batch_stage'  # 'batch_stage' or 'stream'
 
 
 @dataclass
@@ -151,16 +156,16 @@ def create_streaming_pipeline(
     def process_batch(batch_df, batch_id):
         """Process a micro-batch of GRIB files.
         
-        This function:
-        1. Collects file paths from the batch DataFrame
-        2. Batch-stages files to local SSD using azcopy (much faster than FUSE)
-        3. Processes files in parallel using ThreadPoolExecutor
-        4. Syncs to cloud storage after processing
-        5. Cleans up staged files
+        Supports two processing modes:
+        - 'batch_stage': Download all files first, then process all (traditional)
+        - 'stream': Each worker downloads and processes its own file (pipelined)
+        
+        Stream mode enables download+process overlap for better per-file latency.
         """
         from .region_writer import (
             stage_files_with_azcopy,
             stage_files_with_azure_sdk,
+            download_single_file_azure_sdk,
             cleanup_staging_dir,
             open_zarr_arrays,
             write_grib_to_zarr_direct,
@@ -187,71 +192,142 @@ def create_streaming_pipeline(
             logger.info(f"Batch {batch_id}: No GRIB files to process")
             return
         
-        logger.info(f"Batch {batch_id}: Processing {len(file_paths)} GRIB files")
-        
-        # Stage all files to local SSD (method configurable)
-        # Use shared token_manager to avoid refreshing token every batch
-        stage_start = time.perf_counter()
-        try:
-            if config.staging_method == 'azure_sdk':
-                staged_paths = stage_files_with_azure_sdk(file_paths, token_manager=staging_token_manager)
-            else:  # default to azcopy
-                staged_paths = stage_files_with_azcopy(file_paths, token_manager=staging_token_manager)
-            stage_time = (time.perf_counter() - stage_start) * 1000
-            logger.info(f"Batch {batch_id}: Staged {len(staged_paths)} files in {stage_time:.0f}ms via {config.staging_method}")
-        except Exception as e:
-            logger.error(f"Batch {batch_id}: {config.staging_method} staging failed: {e}, falling back to FUSE")
-            # Fallback: process directly from cloud (slower)
-            staged_paths = {fp: fp for fp in file_paths}
-            stage_time = (time.perf_counter() - stage_start) * 1000
+        logger.info(f"Batch {batch_id}: Processing {len(file_paths)} GRIB files (mode={config.processing_mode})")
         
         # Open zarr arrays ONCE for the entire batch (bypasses xarray overhead)
-        process_start = time.perf_counter()
         zarr_arrays = open_zarr_arrays(config.zarr_store_path)
         logger.info(f"Batch {batch_id}: Opened zarr arrays: {list(zarr_arrays.keys())}")
         
         results = []
         errors = []
+        stage_time = 0
         
-        # Process files in parallel using direct zarr writes (no locking!)
-        with ThreadPoolExecutor(max_workers=config.num_workers) as executor:
-            futures = {}
-            for original_path in file_paths:
-                local_path = staged_paths.get(original_path, original_path)
-                future = executor.submit(
-                    write_grib_to_zarr_direct,
-                    local_path,  # Use local staged path
-                    zarr_arrays,  # Shared zarr arrays (no locking needed)
-                    hour_to_index,
-                )
-                futures[future] = original_path  # Track original path for reporting
+        if config.processing_mode == 'stream':
+            # STREAM MODE: Each worker downloads and processes its own file
+            # This enables download+process pipelining for better per-file latency
             
-            for future in as_completed(futures):
-                original_path = futures[future]
+            def download_and_process(volume_path):
+                """Download a single file and process it immediately."""
+                import time as _time
+                task_start = _time.perf_counter()
+                
                 try:
-                    result = future.result()
-                    # Update result to show original path
-                    result.grib_path = original_path
-                    results.append(result)
-                    if not result.success:
-                        errors.append(f"{original_path}: {result.error}")
+                    # Download single file
+                    local_path = download_single_file_azure_sdk(
+                        volume_path, 
+                        token_manager=staging_token_manager
+                    )
+                    download_time = (_time.perf_counter() - task_start) * 1000
+                    
+                    # Process immediately
+                    process_start = _time.perf_counter()
+                    result = write_grib_to_zarr_direct(
+                        local_path,
+                        zarr_arrays,
+                        hour_to_index,
+                    )
+                    process_time = (_time.perf_counter() - process_start) * 1000
+                    
+                    # Cleanup this file
+                    try:
+                        os.remove(local_path)
+                    except OSError:
+                        pass
+                    
+                    total_time = (_time.perf_counter() - task_start) * 1000
+                    logger.info(
+                        f"Stream {os.path.basename(volume_path)}: "
+                        f"download={download_time:.0f}ms, process={process_time:.0f}ms, "
+                        f"total={total_time:.0f}ms"
+                    )
+                    
+                    return result, volume_path
+                    
                 except Exception as e:
-                    logger.error(f"Error processing {original_path}: {e}")
-                    errors.append(f"{original_path}: {str(e)}")
+                    logger.error(f"Stream error {volume_path}: {e}")
+                    return None, volume_path
+            
+            process_start = time.perf_counter()
+            
+            with ThreadPoolExecutor(max_workers=config.num_workers) as executor:
+                futures = [executor.submit(download_and_process, fp) for fp in file_paths]
+                
+                for future in as_completed(futures):
+                    result, original_path = future.result()
+                    if result:
+                        result.grib_path = original_path
+                        results.append(result)
+                        if not result.success:
+                            errors.append(f"{original_path}: {result.error}")
+                    else:
+                        errors.append(f"{original_path}: download/process failed")
+            
+            processing_time = (time.perf_counter() - process_start) * 1000
+            
+        else:
+            # BATCH_STAGE MODE: Download all files first, then process all (traditional)
+            
+            # Stage all files to local SSD (method configurable)
+            stage_start = time.perf_counter()
+            try:
+                if config.staging_method == 'azure_sdk':
+                    staged_paths = stage_files_with_azure_sdk(file_paths, token_manager=staging_token_manager)
+                else:  # default to azcopy
+                    staged_paths = stage_files_with_azcopy(file_paths, token_manager=staging_token_manager)
+                stage_time = (time.perf_counter() - stage_start) * 1000
+                logger.info(f"Batch {batch_id}: Staged {len(staged_paths)} files in {stage_time:.0f}ms via {config.staging_method}")
+            except Exception as e:
+                logger.error(f"Batch {batch_id}: {config.staging_method} staging failed: {e}, falling back to FUSE")
+                staged_paths = {fp: fp for fp in file_paths}
+                stage_time = (time.perf_counter() - stage_start) * 1000
+            
+            process_start = time.perf_counter()
+            
+            # Process files in parallel using direct zarr writes (no locking!)
+            with ThreadPoolExecutor(max_workers=config.num_workers) as executor:
+                futures = {}
+                for original_path in file_paths:
+                    local_path = staged_paths.get(original_path, original_path)
+                    future = executor.submit(
+                        write_grib_to_zarr_direct,
+                        local_path,
+                        zarr_arrays,
+                        hour_to_index,
+                    )
+                    futures[future] = original_path
+                
+                for future in as_completed(futures):
+                    original_path = futures[future]
+                    try:
+                        result = future.result()
+                        result.grib_path = original_path
+                        results.append(result)
+                        if not result.success:
+                            errors.append(f"{original_path}: {result.error}")
+                    except Exception as e:
+                        logger.error(f"Error processing {original_path}: {e}")
+                        errors.append(f"{original_path}: {str(e)}")
+            
+            processing_time = (time.perf_counter() - process_start) * 1000
+            
+            # Clean up staged files
+            try:
+                cleanup_staging_dir()
+            except Exception as e:
+                logger.warning(f"Batch {batch_id}: Failed to cleanup staging dir: {e}")
         
-        processing_time = (time.perf_counter() - process_start) * 1000
         successful = sum(1 for r in results if r.success)
         
-        # Clean up staged files
-        try:
-            cleanup_staging_dir()
-        except Exception as e:
-            logger.warning(f"Batch {batch_id}: Failed to cleanup staging dir: {e}")
-        
-        logger.info(
-            f"Batch {batch_id}: Processed {successful}/{len(file_paths)} files "
-            f"(stage={stage_time:.0f}ms, process={processing_time:.0f}ms)"
-        )
+        if config.processing_mode == 'stream':
+            logger.info(
+                f"Batch {batch_id}: Processed {successful}/{len(file_paths)} files "
+                f"(stream mode, total={processing_time:.0f}ms)"
+            )
+        else:
+            logger.info(
+                f"Batch {batch_id}: Processed {successful}/{len(file_paths)} files "
+                f"(stage={stage_time:.0f}ms, process={processing_time:.0f}ms)"
+            )
         
         # Sync to cloud storage
         sync_time = 0
