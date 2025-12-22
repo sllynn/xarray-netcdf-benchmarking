@@ -34,13 +34,13 @@ VOLUME_NAME = "netcdf"
 
 # Paths
 LANDING_ZONE = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/landing/"
-LOCAL_ZARR_PATH = "/tmp/forecast.zarr"
+LOCAL_ZARR_PATH = "/local_disk0/forecast.zarr"  # Local SSD - much faster than /tmp!
 CLOUD_DESTINATION = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/silver/"
 CHECKPOINT_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/checkpoints/grib_pipeline"
 
 # Processing parameters
 MAX_FILES_PER_BATCH = 32
-NUM_WORKERS = 8  # Reduced from 32 to avoid Zarr lock contention
+NUM_WORKERS = 32  # Direct zarr writes don't have lock contention
 TRIGGER_INTERVAL = "0 seconds"  # Process immediately (no buffering)
 
 # COMMAND ----------
