@@ -80,6 +80,7 @@ emitted = emit_schedule(
     plan=plan,
     mode=MODE,
     steady_interval_s=STEADY_INTERVAL_S,
+    workers=4,
 )
 
 print(f"✓ Emitted {len(emitted)} files")

@@ -32,6 +32,7 @@ import json
 import os
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -204,6 +205,7 @@ def emit_schedule(
     plan: Iterable[tuple[str, int]],
     mode: ArrivalMode,
     steady_interval_s: float = 1.0,
+    workers: int = 1,
 ) -> list[EmittedFile]:
     """Emit a sequence of GRIBs according to a plan.
 
@@ -218,18 +220,79 @@ def emit_schedule(
         - burst: emit with no delay.
     steady_interval_s:
         Delay for steady mode.
+    workers:
+        Number of background workers used to *prepare* files.
+
+        In steady mode, the harness will still *release* files at the requested
+        cadence (1/`steady_interval_s`), but will overlap the expensive GRIB
+        generation work.
 
     Returns
     -------
     list[EmittedFile]
         Emission records.
     """
+    # Materialize the plan so we can safely index it and schedule background work.
+    plan_list = list(plan)
+
+    def _emit(args: tuple[str, int]) -> EmittedFile:
+        var, fh = args
+        return emit_one_grib(landing_dir=landing_dir, variable=var, forecast_hour=fh)
+
     emitted: list[EmittedFile] = []
-    for i, (var, fh) in enumerate(plan):
-        rec = emit_one_grib(landing_dir=landing_dir, variable=var, forecast_hour=fh)
-        emitted.append(rec)
-        if mode == "steady" and i < 10**12:
-            time.sleep(steady_interval_s)
+
+    # Burst mode: emit as fast as possible. Optional worker pool can still help by
+    # overlapping generation across tasks.
+    if mode == "burst":
+        if workers <= 1:
+            for var, fh in plan_list:
+                emitted.append(_emit((var, fh)))
+            return emitted
+
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = [ex.submit(_emit, args) for args in plan_list]
+            for fut in futures:
+                emitted.append(fut.result())
+        return emitted
+
+    # Steady mode: release at a fixed cadence, but overlap generation with a pool.
+    # We do this by keeping a small backlog of in-flight emits.
+    cadence_s = steady_interval_s
+    start = time.perf_counter()
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        next_to_schedule = 0
+        in_flight: dict[int, object] = {}
+
+        def _schedule_one(i: int) -> None:
+            in_flight[i] = ex.submit(_emit, plan_list[i])
+
+        # Prime the pipeline
+        while next_to_schedule < len(plan_list) and len(in_flight) < max(1, workers):
+            _schedule_one(next_to_schedule)
+            next_to_schedule += 1
+
+        for i in range(len(plan_list)):
+            # Wait until the target wall-clock release time for item i.
+            target_t = start + i * cadence_s
+            sleep_s = target_t - time.perf_counter()
+            if sleep_s > 0:
+                time.sleep(sleep_s)
+
+            # Ensure the i-th item is scheduled.
+            if i not in in_flight:
+                _schedule_one(i)
+                next_to_schedule = max(next_to_schedule, i + 1)
+
+            # Block until the i-th emission is complete, then "release" it.
+            rec = in_flight.pop(i).result()
+            emitted.append(rec)
+
+            # Keep the backlog full.
+            while next_to_schedule < len(plan_list) and len(in_flight) < max(1, workers):
+                _schedule_one(next_to_schedule)
+                next_to_schedule += 1
+
     return emitted
 
 
