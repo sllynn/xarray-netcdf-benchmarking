@@ -134,12 +134,11 @@ def emit_one_grib(
     reference_time_iso:
         Optional ISO reference time (UTC). If None, generator will round to cycle.
     producer_release_utc:
-        Producer-side release timestamp (UTC ISO). If provided, the file and
-        manifest will be *staged* under non-matching `.partial` filenames and
-        then atomically renamed into place at the end of the function.
+        Producer-side release timestamp (UTC ISO). Used for correlation and for
+        the emitted filename.
 
-        This allows callers to prepare work in background threads while still
-        controlling when AutoLoader first sees a matching `*.grib2` path.
+        This function will always stage payload+manifest under non-matching
+        `.partial` filenames and then atomically rename them into place.
 
     Returns
     -------
@@ -290,8 +289,9 @@ def emit_schedule(
         in_flight: dict[int, object] = {}
 
         def _schedule_one(i: int) -> None:
-            # Stage payload/manifest early; the final rename into `*.grib2` happens
-            # when this future is awaited with the release timestamp.
+            # IMPORTANT: We do *not* pass a release timestamp here. The actual
+            # file release (rename from `.partial` -> `.grib2`) will happen when
+            # we block on this future at the scheduled release moment.
             in_flight[i] = ex.submit(_emit, plan_list[i], release_utc=None)
 
         # Prime the pipeline
@@ -311,32 +311,16 @@ def emit_schedule(
                 _schedule_one(i)
                 next_to_schedule = max(next_to_schedule, i + 1)
 
-            # Release time: compute the scheduled release timestamp, then block until
-            # the staged payload+manifest are ready.
+            # Release time: compute the scheduled release timestamp, then run the
+            # emit for this item exactly once.
             release_utc = utc_now_iso()
 
-            rec = in_flight.pop(i).result()
+            # Drop any pre-scheduled work for this index (it may still be running);
+            # we wait for it to finish so we don't leave background work executing.
+            _ = in_flight.pop(i).result()
 
-            # The background task already staged and released the file; overwrite the
-            # correlation timestamp to the scheduled release time and update the manifest.
-            rec = EmittedFile(
-                file_id=rec.file_id,
-                variable=rec.variable,
-                forecast_hour=rec.forecast_hour,
-                landing_path=rec.landing_path,
-                manifest_path=rec.manifest_path,
-                producer_write_start_utc=rec.producer_write_start_utc,
-                producer_release_utc=release_utc,
-            )
-
-            try:
-                mp = Path(rec.manifest_path)
-                payload = json.loads(mp.read_text())
-                payload["producer_release_utc"] = rec.producer_release_utc
-                write_manifest_json(mp, payload)
-            except Exception:
-                pass
-
+            # Emit the real file+manifest for this plan item at the scheduled moment.
+            rec = _emit(plan_list[i], release_utc=release_utc)
             emitted.append(rec)
 
             # Keep the backlog full.
