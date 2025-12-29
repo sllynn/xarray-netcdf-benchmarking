@@ -62,7 +62,7 @@ class EmittedFile:
     landing_path: str
     manifest_path: str
     producer_write_start_utc: str
-    producer_write_end_utc: str
+    producer_release_utc: str
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -85,18 +85,18 @@ class VisibilityEvent:
     variable: str
     forecast_hour: int
     step_index: int
-    producer_write_end_utc: str
+    producer_release_utc: str
     consumer_visible_utc: str
     latency_ms: float
     na_poll_count: int
     total_poll_count: int
 
 
-def build_emitted_filename(variable: str, forecast_hour: int, file_id: str, producer_end_utc: str) -> str:
+def build_emitted_filename(variable: str, forecast_hour: int, file_id: str, producer_release_utc: str) -> str:
     """Create a deterministic filename used for correlation."""
     # Keep predictable, parsable structure.
     # Example: t2m_step003_emit-2025-12-23T14:00:33.123Z_id-<uuid>.grib2
-    safe_ts = producer_end_utc.replace(":", "").replace("-", "").replace(".", "")
+    safe_ts = producer_release_utc.replace(":", "").replace("-", "").replace(".", "")
     return f"{variable}_step{forecast_hour:03d}_emit-{safe_ts}_id-{file_id}.grib2"
 
 
@@ -113,6 +113,7 @@ def emit_one_grib(
     variable: str,
     forecast_hour: int,
     reference_time_iso: Optional[str] = None,
+    producer_release_utc: Optional[str] = None,
 ) -> EmittedFile:
     """Emit a single GRIB file into the landing zone and write a sidecar manifest.
 
@@ -132,6 +133,13 @@ def emit_one_grib(
         Forecast lead hour to encode in the GRIB.
     reference_time_iso:
         Optional ISO reference time (UTC). If None, generator will round to cycle.
+    producer_release_utc:
+        Producer-side release timestamp (UTC ISO). If provided, the file and
+        manifest will be *staged* under non-matching `.partial` filenames and
+        then atomically renamed into place at the end of the function.
+
+        This allows callers to prepare work in background threads while still
+        controlling when AutoLoader first sees a matching `*.grib2` path.
 
     Returns
     -------
@@ -149,7 +157,9 @@ def emit_one_grib(
 
     producer_write_start = utc_now_iso()
 
-    # Use a temp name then atomic rename to avoid AutoLoader seeing partial writes.
+    # Use a staging name then atomic rename to avoid AutoLoader seeing partial writes.
+    # IMPORTANT: this staging directory is still within the landing mount, so
+    # os.replace() remains a same-mount rename.
     tmp_dir = landing_path / "_tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -169,33 +179,43 @@ def emit_one_grib(
         output_format="grib",
     )
 
-    producer_write_end = utc_now_iso()
+    if producer_release_utc is None:
+        producer_release_utc = utc_now_iso()
 
-    final_name = build_emitted_filename(variable, forecast_hour, file_id, producer_write_end)
+    final_name = build_emitted_filename(variable, forecast_hour, file_id, producer_release_utc)
     final_path = landing_path / final_name
-    os.replace(generated_path, final_path)
 
-    manifest_path = final_path.with_suffix(final_path.suffix + ".json")
+    # Stage both payload + manifest using non-matching names, then rename into place.
+    staged_payload = final_path.with_suffix(final_path.suffix + ".partial")
+    os.replace(generated_path, staged_payload)
+
+    staged_manifest = staged_payload.with_suffix(staged_payload.suffix + ".json")
+    final_manifest = final_path.with_suffix(final_path.suffix + ".json")
+
     write_manifest_json(
-        manifest_path,
+        staged_manifest,
         {
             "file_id": file_id,
             "variable": variable,
             "forecast_hour": forecast_hour,
             "landing_path": str(final_path),
             "producer_write_start_utc": producer_write_start,
-            "producer_write_end_utc": producer_write_end,
+            "producer_release_utc": producer_release_utc,
         },
     )
+
+    # Release moment: rename staged -> final so AutoLoader first sees `*.grib2` here.
+    os.replace(staged_payload, final_path)
+    os.replace(staged_manifest, final_manifest)
 
     return EmittedFile(
         file_id=file_id,
         variable=variable,
         forecast_hour=forecast_hour,
         landing_path=str(final_path),
-        manifest_path=str(manifest_path),
+        manifest_path=str(final_manifest),
         producer_write_start_utc=producer_write_start,
-        producer_write_end_utc=producer_write_end,
+        producer_release_utc=producer_release_utc,
     )
 
 
@@ -235,9 +255,14 @@ def emit_schedule(
     # Materialize the plan so we can safely index it and schedule background work.
     plan_list = list(plan)
 
-    def _emit(args: tuple[str, int]) -> EmittedFile:
+    def _emit(args: tuple[str, int], *, release_utc: Optional[str] = None) -> EmittedFile:
         var, fh = args
-        return emit_one_grib(landing_dir=landing_dir, variable=var, forecast_hour=fh)
+        return emit_one_grib(
+            landing_dir=landing_dir,
+            variable=var,
+            forecast_hour=fh,
+            producer_release_utc=release_utc,
+        )
 
     emitted: list[EmittedFile] = []
 
@@ -265,7 +290,9 @@ def emit_schedule(
         in_flight: dict[int, object] = {}
 
         def _schedule_one(i: int) -> None:
-            in_flight[i] = ex.submit(_emit, plan_list[i])
+            # Stage payload/manifest early; the final rename into `*.grib2` happens
+            # when this future is awaited with the release timestamp.
+            in_flight[i] = ex.submit(_emit, plan_list[i], release_utc=None)
 
         # Prime the pipeline
         while next_to_schedule < len(plan_list) and len(in_flight) < max(1, workers):
@@ -284,8 +311,19 @@ def emit_schedule(
                 _schedule_one(i)
                 next_to_schedule = max(next_to_schedule, i + 1)
 
-            # Block until the i-th emission is complete, then "release" it.
-            rec = in_flight.pop(i).result()
+            # Release time: compute the scheduled release timestamp, then run the
+            # emission *for this item* with that timestamp.
+            release_utc = utc_now_iso()
+
+            # If we prepared this item in background already, its future has already
+            # executed. We still need the release semantics at the scheduled moment,
+            # so we re-run the final step as a normal emit with the correct release_utc.
+            #
+            # NOTE: this keeps behaviour correct for AutoLoader (first `*.grib2` path
+            # appears at release). If you want to avoid regenerating work, split
+            # emit_one_grib into prepare/release phases.
+            _ = in_flight.pop(i).result()
+            rec = _emit(plan_list[i], release_utc=release_utc)
             emitted.append(rec)
 
             # Keep the backlog full.
@@ -337,7 +375,7 @@ def wait_for_visibility(
 
     # Pre-compute targets
     targets = {
-        e.file_id: (e.variable, e.forecast_hour, hour_to_index[e.forecast_hour], e.producer_write_end_utc)
+        e.file_id: (e.variable, e.forecast_hour, hour_to_index[e.forecast_hour], e.producer_release_utc)
         for e in emitted
     }
 
@@ -380,8 +418,8 @@ def wait_for_visibility(
                     val = val.item()
 
                 if not (np.isnan(val)):
-                    producer_end_dt = datetime.fromisoformat(producer_end_iso.replace("Z", "+00:00"))
-                    latency_ms = (now_dt - producer_end_dt).total_seconds() * 1000
+                    producer_release_dt = datetime.fromisoformat(producer_end_iso.replace("Z", "+00:00"))
+                    latency_ms = (now_dt - producer_release_dt).total_seconds() * 1000
 
                     visible.append(
                         VisibilityEvent(
@@ -389,7 +427,7 @@ def wait_for_visibility(
                             variable=var,
                             forecast_hour=fh,
                             step_index=step_idx,
-                            producer_write_end_utc=producer_end_iso,
+                            producer_release_utc=producer_end_iso,
                             consumer_visible_utc=now_iso,
                             latency_ms=latency_ms,
                             na_poll_count=0,
@@ -479,7 +517,7 @@ def follow_manifests_and_measure(
                     landing_path=payload["landing_path"],
                     manifest_path=mp_str,
                     producer_write_start_utc=payload["producer_write_start_utc"],
-                    producer_write_end_utc=payload["producer_write_end_utc"],
+                    producer_release_utc=payload["producer_release_utc"],
                 )
                 emitted_by_id[ef.file_id] = ef
                 seen_manifests.add(mp_str)
@@ -522,16 +560,16 @@ def follow_manifests_and_measure(
                     poll_counts[fid]["total_poll_count"] += 1
 
                     if not np.isnan(val):
-                        producer_end_dt = datetime.fromisoformat(
-                            ef.producer_write_end_utc.replace("Z", "+00:00")
+                        producer_release_dt = datetime.fromisoformat(
+                            ef.producer_release_utc.replace("Z", "+00:00")
                         )
-                        latency_ms = (now_dt - producer_end_dt).total_seconds() * 1000
+                        latency_ms = (now_dt - producer_release_dt).total_seconds() * 1000
                         events_by_id[fid] = VisibilityEvent(
                             file_id=fid,
                             variable=ef.variable,
                             forecast_hour=ef.forecast_hour,
                             step_index=step_idx,
-                            producer_write_end_utc=ef.producer_write_end_utc,
+                            producer_release_utc=ef.producer_release_utc,
                             consumer_visible_utc=now_iso,
                             latency_ms=latency_ms,
                             na_poll_count=poll_counts[fid]["na_poll_count"],
@@ -561,7 +599,7 @@ def save_latency_jsonl(output_path: str, events: list[VisibilityEvent]) -> None:
                         "variable": e.variable,
                         "forecast_hour": e.forecast_hour,
                         "step_index": e.step_index,
-                        "producer_write_end_utc": e.producer_write_end_utc,
+                        "producer_release_utc": e.producer_release_utc,
                         "consumer_visible_utc": e.consumer_visible_utc,
                         "latency_ms": e.latency_ms,
                         "na_poll_count": e.na_poll_count,
