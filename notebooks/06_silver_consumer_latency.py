@@ -46,8 +46,8 @@ SILVER_ZARR = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/silver/forecast.zarr"
 
 RESULTS_DIR = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/benchmark_results/streaming_latency"
 
-POLL_INTERVAL_MS = 200.0
-TIMEOUT_S = 900.0
+POLL_INTERVAL_MS = 100.0
+TIMEOUT_S = 120.0
 
 print(f"Landing zone: {LANDING_ZONE}")
 print(f"Silver Zarr:   {SILVER_ZARR}")
@@ -60,25 +60,25 @@ print(f"Results dir:   {RESULTS_DIR}")
 
 # COMMAND ----------
 
-manifest_paths = sorted(Path(LANDING_ZONE).glob("*.grib2.json"))
-print(f"Found {len(manifest_paths)} manifests")
+# manifest_paths = sorted(Path(LANDING_ZONE).glob("*.grib2.json"))
+# print(f"Found {len(manifest_paths)} manifests")
 
-emitted = []
-for mp in manifest_paths:
-    payload = json.loads(mp.read_text())
-    emitted.append(
-        EmittedFile(
-            file_id=payload["file_id"],
-            variable=payload["variable"],
-            forecast_hour=int(payload["forecast_hour"]),
-            landing_path=payload["landing_path"],
-            manifest_path=str(mp),
-            producer_write_start_utc=payload["producer_write_start_utc"],
-            producer_write_end_utc=payload["producer_write_end_utc"],
-        )
-    )
+# emitted = []
+# for mp in manifest_paths:
+#     payload = json.loads(mp.read_text())
+#     emitted.append(
+#         EmittedFile(
+#             file_id=payload["file_id"],
+#             variable=payload["variable"],
+#             forecast_hour=int(payload["forecast_hour"]),
+#             landing_path=payload["landing_path"],
+#             manifest_path=str(mp),
+#             producer_write_start_utc=payload["producer_write_start_utc"],
+#             producer_write_end_utc=payload["producer_write_end_utc"],
+#         )
+#     )
 
-print(f"Loaded {len(emitted)} emitted records")
+# print(f"Loaded {len(emitted)} emitted records")
 
 # COMMAND ----------
 
@@ -96,11 +96,12 @@ events = follow_manifests_and_measure(
     max_runtime_s=TIMEOUT_S,
 )
 
-print(f"Visible: {len(events)}/{len(emitted)}")
+# print(f"Visible: {len(events)}/{len(emitted)}")
 
 # Save JSONL
 Path(RESULTS_DIR).mkdir(parents=True, exist_ok=True)
 output_path = str(Path(RESULTS_DIR) / "latency_events.jsonl")
+dbutils.fs.rm(output_path, True)
 save_latency_jsonl(output_path, events)
 print(f"✓ Saved: {output_path}")
 

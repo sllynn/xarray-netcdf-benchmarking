@@ -128,6 +128,14 @@ from src.zarr_init import initialize_zarr_store, generate_forecast_steps
 
 # COMMAND ----------
 
+dbutils.fs.rm(LOCAL_ZARR_PATH, recurse=True)
+
+# COMMAND ----------
+
+dbutils.fs.rm(f"file:{LOCAL_ZARR_PATH}", recurse=True)
+
+# COMMAND ----------
+
 # Check if store exists, create if needed
 from pathlib import Path
 from datetime import timezone
