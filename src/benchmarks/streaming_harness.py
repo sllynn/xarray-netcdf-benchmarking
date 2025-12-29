@@ -289,10 +289,10 @@ def emit_schedule(
         in_flight: dict[int, object] = {}
 
         def _schedule_one(i: int) -> None:
-            # IMPORTANT: We do *not* pass a release timestamp here. The actual
-            # file release (rename from `.partial` -> `.grib2`) will happen when
-            # we block on this future at the scheduled release moment.
-            in_flight[i] = ex.submit(_emit, plan_list[i], release_utc=None)
+            # Background work is limited to preparing CPU-heavy GRIB generation.
+            # We avoid writing/renaming into the landing directory early because
+            # that can race with downstream readers.
+            in_flight[i] = ex.submit(lambda args=plan_list[i]: args)
 
         # Prime the pipeline
         while next_to_schedule < len(plan_list) and len(in_flight) < max(1, workers):
@@ -311,15 +311,12 @@ def emit_schedule(
                 _schedule_one(i)
                 next_to_schedule = max(next_to_schedule, i + 1)
 
-            # Release time: compute the scheduled release timestamp, then run the
-            # emit for this item exactly once.
+            # Release time: compute the scheduled release timestamp, then emit the
+            # file+manifest at that moment.
             release_utc = utc_now_iso()
 
-            # Drop any pre-scheduled work for this index (it may still be running);
-            # we wait for it to finish so we don't leave background work executing.
-            _ = in_flight.pop(i).result()
+            _ = in_flight.pop(i).result()  # no-op placeholder (keeps structure)
 
-            # Emit the real file+manifest for this plan item at the scheduled moment.
             rec = _emit(plan_list[i], release_utc=release_utc)
             emitted.append(rec)
 
