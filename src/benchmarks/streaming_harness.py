@@ -66,7 +66,19 @@ class EmittedFile:
 
 @dataclass(frozen=True, kw_only=True)
 class VisibilityEvent:
-    """Represents the first time a file's data becomes visible in the silver Zarr."""
+    """Represents the first time a file's data becomes visible in the silver Zarr.
+
+    Poll counters
+    -------------
+    `total_poll_count` counts how many times the consumer checked the target Zarr
+    slot for this file_id.
+
+    `na_poll_count` counts how many of those checks still observed NaN / missing
+    data (i.e. the slot was not yet visible).
+
+    These can help distinguish cases where latency is dominated by repeated
+    "still NA" reads vs. cases where visibility arrives quickly.
+    """
 
     file_id: str
     variable: str
@@ -75,6 +87,8 @@ class VisibilityEvent:
     producer_write_end_utc: str
     consumer_visible_utc: str
     latency_ms: float
+    na_poll_count: int
+    total_poll_count: int
 
 
 def build_emitted_filename(variable: str, forecast_hour: int, file_id: str, producer_end_utc: str) -> str:
@@ -315,6 +329,8 @@ def wait_for_visibility(
                             producer_write_end_utc=producer_end_iso,
                             consumer_visible_utc=now_iso,
                             latency_ms=latency_ms,
+                            na_poll_count=0,
+                            total_poll_count=0,
                         )
                     )
                     to_remove.append(file_id)
@@ -373,6 +389,11 @@ def follow_manifests_and_measure(
     emitted_by_id: dict[str, EmittedFile] = {}
     events_by_id: dict[str, VisibilityEvent] = {}
 
+    # Poll counters keyed by file_id.
+    # - total_poll_count: number of times we've checked this file's target Zarr slot
+    # - na_poll_count: number of those checks that were still NaN
+    poll_counts: dict[str, dict[str, int]] = {}
+
     start = time.perf_counter()
     hour_to_index = build_hour_to_index_map(generate_forecast_steps())
     n_idx, lat_idx, lon_idx = sample
@@ -405,6 +426,8 @@ def follow_manifests_and_measure(
 
         # 2) Check visibility for all not-yet-visible file_ids
         pending = [fid for fid in emitted_by_id.keys() if fid not in events_by_id]
+        for fid in pending:
+            poll_counts.setdefault(fid, {"na_poll_count": 0, "total_poll_count": 0})
 
         if pending:
             try:
@@ -433,6 +456,8 @@ def follow_manifests_and_measure(
                     if isinstance(val, np.ndarray):
                         val = val.item()
 
+                    poll_counts[fid]["total_poll_count"] += 1
+
                     if not np.isnan(val):
                         producer_end_dt = datetime.fromisoformat(
                             ef.producer_write_end_utc.replace("Z", "+00:00")
@@ -446,7 +471,11 @@ def follow_manifests_and_measure(
                             producer_write_end_utc=ef.producer_write_end_utc,
                             consumer_visible_utc=now_iso,
                             latency_ms=latency_ms,
+                            na_poll_count=poll_counts[fid]["na_poll_count"],
+                            total_poll_count=poll_counts[fid]["total_poll_count"],
                         )
+                    else:
+                        poll_counts[fid]["na_poll_count"] += 1
             finally:
                 ds.close()
 
@@ -472,6 +501,8 @@ def save_latency_jsonl(output_path: str, events: list[VisibilityEvent]) -> None:
                         "producer_write_end_utc": e.producer_write_end_utc,
                         "consumer_visible_utc": e.consumer_visible_utc,
                         "latency_ms": e.latency_ms,
+                        "na_poll_count": e.na_poll_count,
+                        "total_poll_count": e.total_poll_count,
                     }
                 )
                 + "\n"
