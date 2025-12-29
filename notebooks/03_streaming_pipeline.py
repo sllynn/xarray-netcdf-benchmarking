@@ -156,6 +156,7 @@ import shutil
 # Clear checkpoint to reprocess all files
 try:
     dbutils.fs.rm(CHECKPOINT_PATH, recurse=True)
+    dbutils.fs.rm(LANDING_ZONE, recurse=True)
     print(f"✓ Cleared checkpoint: {CHECKPOINT_PATH}")
 except Exception as e:
     # Checkpoint may not exist yet on first run
