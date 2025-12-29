@@ -311,19 +311,32 @@ def emit_schedule(
                 _schedule_one(i)
                 next_to_schedule = max(next_to_schedule, i + 1)
 
-            # Release time: compute the scheduled release timestamp, then run the
-            # emission *for this item* with that timestamp.
+            # Release time: compute the scheduled release timestamp, then block until
+            # the staged payload+manifest are ready.
             release_utc = utc_now_iso()
 
-            # If we prepared this item in background already, its future has already
-            # executed. We still need the release semantics at the scheduled moment,
-            # so we re-run the final step as a normal emit with the correct release_utc.
-            #
-            # NOTE: this keeps behaviour correct for AutoLoader (first `*.grib2` path
-            # appears at release). If you want to avoid regenerating work, split
-            # emit_one_grib into prepare/release phases.
-            _ = in_flight.pop(i).result()
-            rec = _emit(plan_list[i], release_utc=release_utc)
+            rec = in_flight.pop(i).result()
+
+            # The background task already staged and released the file; overwrite the
+            # correlation timestamp to the scheduled release time and update the manifest.
+            rec = EmittedFile(
+                file_id=rec.file_id,
+                variable=rec.variable,
+                forecast_hour=rec.forecast_hour,
+                landing_path=rec.landing_path,
+                manifest_path=rec.manifest_path,
+                producer_write_start_utc=rec.producer_write_start_utc,
+                producer_release_utc=release_utc,
+            )
+
+            try:
+                mp = Path(rec.manifest_path)
+                payload = json.loads(mp.read_text())
+                payload["producer_release_utc"] = rec.producer_release_utc
+                write_manifest_json(mp, payload)
+            except Exception:
+                pass
+
             emitted.append(rec)
 
             # Keep the backlog full.
