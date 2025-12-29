@@ -37,7 +37,7 @@ LANDING_ZONE = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/landing/"
 LOCAL_ZARR_PATH = "/local_disk0/forecast.zarr"  # Local SSD - much faster than /tmp!
 # IMPORTANT: sync the Zarr directory into a dedicated subdirectory in silver so
 # consumers can open it as a Zarr root at `.../silver/forecast.zarr`.
-CLOUD_DESTINATION = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/silver/forecast.zar"
+CLOUD_DESTINATION = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/silver/forecast.zarr"
 CHECKPOINT_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/checkpoints/grib_pipeline"
 
 # Processing parameters
