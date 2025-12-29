@@ -28,6 +28,7 @@ data/references*
 *.swp
 *.swo
 *~
+litellm-config.yaml
 
 # OS
 .DS_Store
