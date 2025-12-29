@@ -45,6 +45,16 @@ MAX_FILES_PER_BATCH = 32
 NUM_WORKERS = 32  # Direct zarr writes don't have lock contention
 TRIGGER_INTERVAL = "0 seconds"  # Process immediately (no buffering)
 
+# Clean-run testing controls:
+# - If True, Auto Loader will only process new arrivals after the stream starts.
+#   (Recommended for repeated E2E test runs.)
+# - If False, it will also pick up existing files in the landing zone.
+INCLUDE_EXISTING_FILES = False
+
+# If True, the stream won't fail if it receives a notification for a file that
+# has been deleted (e.g. you cleared the landing zone between runs).
+IGNORE_MISSING_FILES = True
+
 # Staging method: 'azcopy' or 'azure_sdk' (only used in batch_stage mode)
 # - 'azcopy': ~15s startup overhead, but very fast bulk transfers (good for large batches)
 # - 'azure_sdk': No startup overhead, uses async HTTP (better for smaller batches)
@@ -178,6 +188,8 @@ config = PipelineConfig(
     num_workers=NUM_WORKERS,
     trigger_interval=TRIGGER_INTERVAL,
     use_file_notification=True,  # Low-latency file discovery
+    include_existing_files=INCLUDE_EXISTING_FILES,
+    ignore_missing_files=IGNORE_MISSING_FILES,
     sync_after_each_batch=True,  # Sync to cloud after each batch
     staging_method=STAGING_METHOD,  # 'azcopy' or 'azure_sdk'
     processing_mode=PROCESSING_MODE,  # 'batch_stage' or 'stream'

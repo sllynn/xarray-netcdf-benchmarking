@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PipelineConfig:
     """Configuration for the streaming pipeline.
-    
+
     Parameters
     ----------
     landing_zone : str
@@ -46,6 +46,24 @@ class PipelineConfig:
         Spark trigger interval (default: '0 seconds' for immediate).
     use_file_notification : bool
         Use file notification mode for AutoLoader (default: True).
+    include_existing_files : bool
+        Whether Auto Loader should process files already present in the landing
+        zone when the stream starts.
+
+        For E2E test runs where you want to start cleanly from "now" (and avoid
+        processing stale notifications / leftover files), set this to False.
+
+        Note: if you keep the same checkpoint directory, Auto Loader will still
+        resume from checkpoint state. For a truly clean run, also rotate
+        checkpoint_path.
+
+        Default: True.
+    ignore_missing_files : bool
+        If True, Spark will skip files that disappear between notification and
+        processing (e.g. you cleaned the landing zone). This prevents hard
+        failures like CLOUD_FILE_SOURCE_FILE_NOT_FOUND.
+
+        Default: True.
     sync_after_each_batch : bool
         Sync to cloud after each batch (default: True).
     staging_method : str
@@ -57,6 +75,7 @@ class PipelineConfig:
         'batch_stage': Download all files first, then process all (default).
         'stream': Each worker downloads and processes its own file (pipelined).
     """
+
     landing_zone: str
     zarr_store_path: str
     cloud_destination: str
@@ -65,6 +84,8 @@ class PipelineConfig:
     num_workers: int = 32
     trigger_interval: str = '0 seconds'
     use_file_notification: bool = True
+    include_existing_files: bool = True
+    ignore_missing_files: bool = True
     sync_after_each_batch: bool = True
     staging_method: str = 'azcopy'  # 'azcopy' or 'azure_sdk'
     processing_mode: str = 'batch_stage'  # 'batch_stage' or 'stream'
@@ -383,11 +404,20 @@ def create_streaming_pipeline(
             except Exception as e:
                 logger.error(f"Batch callback error: {e}")
     
+    # Configure Spark/reader behavior for "clean start" testing.
+    #
+    # - includeExistingFiles=False makes the stream only pick up newly-arriving
+    #   files (good for repeated E2E runs).
+    # - ignoreMissingFiles=True prevents failures if you clean the landing zone
+    #   but there are still pending file events.
+    if config.ignore_missing_files:
+        spark.conf.set("spark.sql.files.ignoreMissingFiles", "true")
+
     # Configure AutoLoader
     reader_options = {
         'cloudFiles.format': 'binaryFile',
         'cloudFiles.maxFilesPerTrigger': str(config.max_files_per_batch),
-        'cloudFiles.includeExistingFiles': 'true',
+        'cloudFiles.includeExistingFiles': 'true' if config.include_existing_files else 'false',
     }
     
     # Use file notification mode if enabled (recommended for low latency)
