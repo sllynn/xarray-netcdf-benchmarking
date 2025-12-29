@@ -268,7 +268,16 @@ def wait_for_visibility(
             break
 
         # Open each poll to avoid stale caching.
-        ds = xr.open_zarr(silver_zarr_path, consolidated=True)
+        #
+        # Some stores in Volumes/silver may not have consolidated metadata
+        # (no .zmetadata). In that case, fall back to non-consolidated opens.
+        try:
+            ds = xr.open_zarr(silver_zarr_path, consolidated=True)
+        except KeyError as e:
+            if str(e).strip("\"") in {".zmetadata", "zarr.json"}:
+                ds = xr.open_zarr(silver_zarr_path, consolidated=False)
+            else:
+                raise
         try:
             now_iso = utc_now_iso()
             now_dt = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))

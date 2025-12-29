@@ -2,6 +2,11 @@
 
 This adds a deterministic way to measure end-to-end latency from **producer GRIB write completion** → **consumer visibility in the cloud-synced silver Zarr**, without relying on blob mtimes (which can be skewed).
 
+## Consolidated metadata note
+
+If your silver Zarr store does not contain `.zmetadata`, opening with `consolidated=True` will fail. The consumer logic in
+[`wait_for_visibility()`](src/benchmarks/streaming_harness.py:222) now automatically falls back to `consolidated=False` when it sees a `.zmetadata` KeyError.
+
 ## What was added
 
 - Producer/consumer helper module: [`src/benchmarks/streaming_harness.py`](src/benchmarks/streaming_harness.py:1)
@@ -45,7 +50,10 @@ Run your existing streaming notebook and keep it running:
 
 Ensure:
 - `LANDING_ZONE` points at the same landing directory the producer uses.
-- `CLOUD_DESTINATION` points at the same silver directory the consumer reads.
+- `CLOUD_DESTINATION` points at the Zarr root directory in silver (recommended):
+  - `/Volumes/.../silver/forecast.zarr`
+  so the consumer can open exactly:
+  - [`SILVER_ZARR = .../silver/forecast.zarr`](notebooks/06_silver_consumer_latency.py:41)
 
 ### 1) Emit files (producer)
 Run:
