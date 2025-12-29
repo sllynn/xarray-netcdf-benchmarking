@@ -21,36 +21,41 @@ import xarray as xr
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(kw_only=True)
 class ReadTestResult:
     """Result of a single read test."""
+
+    # NOTE: kw_only=True avoids Databricks/python errors like:
+    #   TypeError: non-default argument 'open_time_ms' follows default argument
+    # that can occur if a downstream environment/tooling reorders fields.
+
     test_id: str
     access_pattern: str
-    
+
     # Query parameters
     steps_requested: int
     ensemble_members: int
     spatial_subset: Optional[tuple] = None
-    
+
     # Timing (milliseconds)
     open_time_ms: float
     read_time_ms: float
     compute_time_ms: float
     total_time_ms: float
-    
+
     # Data statistics
     data_shape: tuple
     data_size_mb: float
     nan_percentage: float
-    
+
     # Computed values (for validation)
     data_min: Optional[float] = None
     data_max: Optional[float] = None
     data_mean: Optional[float] = None
-    
+
     success: bool = True
     error: Optional[str] = None
-    
+
     timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
 

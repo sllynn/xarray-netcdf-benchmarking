@@ -51,7 +51,7 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class EmittedFile:
     """Represents a single emitted GRIB and its correlation metadata."""
 
@@ -64,7 +64,7 @@ class EmittedFile:
     producer_write_end_utc: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class VisibilityEvent:
     """Represents the first time a file's data becomes visible in the silver Zarr."""
 
