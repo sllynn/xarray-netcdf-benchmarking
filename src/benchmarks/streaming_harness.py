@@ -231,6 +231,13 @@ def wait_for_visibility(
 
     This checks a single point per (variable, step) for NaN->value transition.
 
+    Notes
+    -----
+    This function assumes you already have the full list of `emitted` files.
+    If you want to measure latency while the producer is still running
+    (recommended to avoid bias), use:
+    [`follow_manifests_and_measure()`](src/benchmarks/streaming_harness.py:1)
+
     Parameters
     ----------
     silver_zarr_path:
@@ -320,6 +327,132 @@ def wait_for_visibility(
         time.sleep(poll_interval_ms / 1000.0)
 
     return visible
+
+
+def follow_manifests_and_measure(
+    *,
+    landing_dir: str,
+    silver_zarr_path: str,
+    poll_interval_ms: float = 200.0,
+    sample: tuple[int, int, int] = (0, 180, 360),
+    max_runtime_s: Optional[float] = None,
+) -> list[VisibilityEvent]:
+    """Continuously discover new manifests and record first-visibility latency.
+
+    This is the unbiased mode for a streaming test: start the consumer first,
+    then start the producer. The consumer will:
+    1) watch `landing_dir` for new `*.grib2.json` manifests
+    2) add them to the wait-set
+    3) record a `VisibilityEvent` as soon as each corresponding Zarr slot becomes non-NaN
+
+    Termination
+    -----------
+    - If `max_runtime_s` is provided, it will stop after that wall-clock time.
+    - Otherwise it runs until interrupted by the user (e.g. stop cell execution).
+
+    Parameters
+    ----------
+    landing_dir:
+        Directory containing producer manifest files.
+    silver_zarr_path:
+        Path to the Zarr store in the silver Volume.
+    poll_interval_ms:
+        Poll interval for both manifest discovery and Zarr reads.
+    sample:
+        Tuple of (number_idx, latitude_idx, longitude_idx) sample point.
+    max_runtime_s:
+        Optional maximum runtime.
+
+    Returns
+    -------
+    list[VisibilityEvent]
+        All visibility events captured during the run.
+    """
+    landing = Path(landing_dir)
+    seen_manifests: set[str] = set()
+    emitted_by_id: dict[str, EmittedFile] = {}
+    events_by_id: dict[str, VisibilityEvent] = {}
+
+    start = time.perf_counter()
+    hour_to_index = build_hour_to_index_map(generate_forecast_steps())
+    n_idx, lat_idx, lon_idx = sample
+
+    while True:
+        if max_runtime_s is not None and (time.perf_counter() - start) > max_runtime_s:
+            break
+
+        # 1) Discover new manifests
+        for mp in landing.glob("*.grib2.json"):
+            mp_str = str(mp)
+            if mp_str in seen_manifests:
+                continue
+            try:
+                payload = json.loads(mp.read_text())
+                ef = EmittedFile(
+                    file_id=payload["file_id"],
+                    variable=payload["variable"],
+                    forecast_hour=int(payload["forecast_hour"]),
+                    landing_path=payload["landing_path"],
+                    manifest_path=mp_str,
+                    producer_write_start_utc=payload["producer_write_start_utc"],
+                    producer_write_end_utc=payload["producer_write_end_utc"],
+                )
+                emitted_by_id[ef.file_id] = ef
+                seen_manifests.add(mp_str)
+            except Exception:
+                # If a manifest is mid-write or transiently unreadable, just retry next poll.
+                continue
+
+        # 2) Check visibility for all not-yet-visible file_ids
+        pending = [fid for fid in emitted_by_id.keys() if fid not in events_by_id]
+
+        if pending:
+            try:
+                ds = xr.open_zarr(silver_zarr_path, consolidated=True)
+            except KeyError as e:
+                if str(e).strip("\"") in {".zmetadata", "zarr.json"}:
+                    ds = xr.open_zarr(silver_zarr_path, consolidated=False)
+                else:
+                    raise
+
+            try:
+                now_iso = utc_now_iso()
+                now_dt = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+
+                for fid in pending:
+                    ef = emitted_by_id[fid]
+                    step_idx = hour_to_index.get(ef.forecast_hour)
+                    if step_idx is None:
+                        continue
+
+                    val = (
+                        ds[ef.variable]
+                        .isel(step=step_idx, number=n_idx, latitude=lat_idx, longitude=lon_idx)
+                        .values
+                    )
+                    if isinstance(val, np.ndarray):
+                        val = val.item()
+
+                    if not np.isnan(val):
+                        producer_end_dt = datetime.fromisoformat(
+                            ef.producer_write_end_utc.replace("Z", "+00:00")
+                        )
+                        latency_ms = (now_dt - producer_end_dt).total_seconds() * 1000
+                        events_by_id[fid] = VisibilityEvent(
+                            file_id=fid,
+                            variable=ef.variable,
+                            forecast_hour=ef.forecast_hour,
+                            step_index=step_idx,
+                            producer_write_end_utc=ef.producer_write_end_utc,
+                            consumer_visible_utc=now_iso,
+                            latency_ms=latency_ms,
+                        )
+            finally:
+                ds.close()
+
+        time.sleep(poll_interval_ms / 1000.0)
+
+    return list(events_by_id.values())
 
 
 def save_latency_jsonl(output_path: str, events: list[VisibilityEvent]) -> None:

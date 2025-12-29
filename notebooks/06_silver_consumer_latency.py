@@ -31,7 +31,11 @@
 import json
 from pathlib import Path
 
-from src.benchmarks.streaming_harness import wait_for_visibility, save_latency_jsonl, EmittedFile
+from src.benchmarks.streaming_harness import (
+    EmittedFile,
+    follow_manifests_and_measure,
+    save_latency_jsonl,
+)
 
 CATALOG = "stuart"
 SCHEMA = "lseg"
@@ -52,7 +56,7 @@ print(f"Results dir:   {RESULTS_DIR}")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Load producer manifests
+# MAGIC ## Option A: Snapshot mode (use after producer finished)
 
 # COMMAND ----------
 
@@ -79,15 +83,17 @@ print(f"Loaded {len(emitted)} emitted records")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Wait for visibility + save results
+# MAGIC ## Option B: Streaming mode (preferred) – follow manifests while producer runs
 
 # COMMAND ----------
 
-events = wait_for_visibility(
+# In streaming mode we ignore the pre-loaded `emitted` list and instead
+# continuously discover new manifests and record first visibility.
+events = follow_manifests_and_measure(
+    landing_dir=LANDING_ZONE,
     silver_zarr_path=SILVER_ZARR,
-    emitted=emitted,
     poll_interval_ms=POLL_INTERVAL_MS,
-    timeout_s=TIMEOUT_S,
+    max_runtime_s=TIMEOUT_S,
 )
 
 print(f"Visible: {len(events)}/{len(emitted)}")
