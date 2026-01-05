@@ -161,26 +161,47 @@ print(f"Dest path: {dest_path}")
 
 # COMMAND ----------
 
-# Try the rename operation
+# Try the rename operation with different path formats
 service_client = DataLakeServiceClient(account_url, credential=AzureSasCredential(sas_token))
 fs_client = service_client.get_file_system_client(container)
 file_client = fs_client.get_file_client(source_path)
 
-print("Attempting rename via Azure SDK...")
-try:
-    file_client.rename_file(f"{container}/{dest_path}")
-    print("✓ Rename succeeded!")
-except Exception as e:
-    print(f"✗ Rename failed: {type(e).__name__}")
-    print(f"  Error: {e}")
+print("Source file client path:", file_client.path_name)
+print("File URL:", file_client.url)
+
+# Try multiple destination path formats
+dest_formats = [
+    ("container/full_path", f"{container}/{dest_path}"),
+    ("full_path_only", dest_path),
+    ("relative_to_base", "_sas_test/test_dest.txt"),
+    ("just_filename", "test_dest.txt"),
+]
+
+for format_name, dest in dest_formats:
+    # Recreate source file for each test
+    with open(test_file_1, 'w') as f:
+        f.write("test content")
     
-    # Check if it's a permission error
-    error_str = str(e)
-    if "AuthorizationPermissionMismatch" in error_str:
-        print("\n" + "=" * 50)
-        print("CONFIRMED: SAS token lacks required permissions for rename")
-        print("The 'd' (Delete) permission is required but not granted")
-        print("=" * 50)
+    print(f"\nAttempting rename with format '{format_name}':")
+    print(f"  Destination: {dest}")
+    
+    # Get fresh file client
+    file_client = fs_client.get_file_client(source_path)
+    
+    try:
+        file_client.rename_file(dest)
+        print(f"  ✓ Rename succeeded with format: {format_name}")
+        # Clean up dest file
+        try:
+            fs_client.get_file_client(dest_path).delete_file()
+        except:
+            pass
+        break
+    except Exception as e:
+        error_code = getattr(e, 'error_code', 'unknown')
+        print(f"  ✗ Failed: {error_code}")
+        if "AuthorizationPermissionMismatch" not in str(e):
+            print(f"    {e}")
 
 # COMMAND ----------
 
@@ -205,6 +226,68 @@ except Exception as e:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Step 6: Test Delete separately
+
+# COMMAND ----------
+
+# Recreate source file
+with open(test_file_1, 'w') as f:
+    f.write("test content for delete test")
+
+delete_client = fs_client.get_file_client(source_path)
+
+print("Testing delete via Azure SDK...")
+try:
+    delete_client.delete_file()
+    print("✓ Delete succeeded!")
+except Exception as e:
+    print(f"✗ Delete failed: {type(e).__name__}: {e}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Step 7: Test Copy + Delete pattern
+
+# COMMAND ----------
+
+# Recreate source file via FUSE
+with open(test_file_1, 'w') as f:
+    f.write("test content for copy test")
+
+print("Testing copy operation via Azure SDK...")
+source_client = fs_client.get_file_client(source_path)
+
+# Read source content
+try:
+    download = source_client.download_file()
+    content = download.readall()
+    print(f"  ✓ Read source: {len(content)} bytes")
+except Exception as e:
+    print(f"  ✗ Read failed: {e}")
+    content = None
+
+if content:
+    # Write to destination
+    dest_client = fs_client.get_file_client(dest_path)
+    try:
+        dest_client.create_file()
+        dest_client.append_data(content, 0)
+        dest_client.flush_data(len(content))
+        print("  ✓ Write to dest succeeded!")
+        
+        # Now try to delete source
+        try:
+            source_client.delete_file()
+            print("  ✓ Delete source succeeded!")
+            print("\n✓✓✓ COPY + DELETE pattern works! ✓✓✓")
+        except Exception as e:
+            print(f"  ✗ Delete source failed: {e}")
+    except Exception as e:
+        print(f"  ✗ Write to dest failed: {e}")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Cleanup
 
 # COMMAND ----------
@@ -221,8 +304,11 @@ except Exception as e:
 # MAGIC %md
 # MAGIC ## Summary
 # MAGIC
-# MAGIC If you see `AuthorizationPermissionMismatch` on the rename operation, it confirms that:
-# MAGIC 1. Databricks `temporary_path_credentials` with `PATH_READ_WRITE` does NOT grant Delete permission
-# MAGIC 2. Azure Data Lake rename requires Delete permission on the source file
-# MAGIC 3. We need an alternative approach for fast file releases
+# MAGIC **If rename fails but copy+delete works:**
+# MAGIC - The SAS token has the right permissions, but the `rename_file()` API has specific requirements
+# MAGIC - We can use copy+delete as an alternative (might be slightly slower but should still be fast for small files)
+# MAGIC
+# MAGIC **If both fail:**
+# MAGIC - There may be path scoping issues with how the SAS token is generated
+# MAGIC - Check the exact error messages for clues
 
