@@ -44,7 +44,6 @@ import xarray as xr
 from ..zarr_init import build_hour_to_index_map, generate_forecast_steps
 
 ArrivalMode = Literal["steady", "burst"]
-ReleaseMethod = Literal["fuse", "azure_sdk"]
 
 
 class AzureDataLakeRenamer:
@@ -440,10 +439,11 @@ def release_staged_gribs(
     staged_gribs: list[_StagedGrib],
     mode: ArrivalMode,
     steady_interval_s: float = 1.0,
-    method: ReleaseMethod = "fuse",
-    renamer: Optional[AzureDataLakeRenamer] = None,
+    renamer: AzureDataLakeRenamer,
 ) -> list[EmittedFile]:
     """Phase 3: Release pre-staged GRIBs at scheduled intervals.
+    
+    Uses Azure Data Lake SDK for fast renames that bypass FUSE overhead.
     
     Parameters
     ----------
@@ -453,25 +453,19 @@ def release_staged_gribs(
         'steady' for timed releases, 'burst' for immediate.
     steady_interval_s:
         Interval between releases in steady mode.
-    method:
-        'fuse' for os.replace() through FUSE mount (slower).
-        'azure_sdk' for direct Azure Data Lake SDK calls (faster).
     renamer:
-        Required if method='azure_sdk'. Use AzureDataLakeRenamer.from_volume_path().
+        Azure Data Lake renamer for fast file operations.
     
     Returns
     -------
     list of EmittedFile records
     """
-    if method == "azure_sdk" and renamer is None:
-        raise ValueError("renamer is required when method='azure_sdk'")
-    
     emitted: list[EmittedFile] = []
     
     if mode == "burst":
         for sg in staged_gribs:
             release_utc = utc_now_iso()
-            rec = _release_staged_grib(sg, release_utc, method=method, renamer=renamer)
+            rec = _release_staged_grib(sg, release_utc, renamer=renamer)
             emitted.append(rec)
         return emitted
     
@@ -485,9 +479,8 @@ def release_staged_gribs(
         if sleep_s > 0:
             time.sleep(sleep_s)
         
-        # Release using chosen method
         release_utc = utc_now_iso()
-        rec = _release_staged_grib(sg, release_utc, method=method, renamer=renamer)
+        rec = _release_staged_grib(sg, release_utc, renamer=renamer)
         emitted.append(rec)
     
     return emitted
@@ -496,10 +489,9 @@ def release_staged_gribs(
 def _release_staged_grib(
     staged: _StagedGrib,
     producer_release_utc: str,
-    method: ReleaseMethod = "fuse",
-    renamer: Optional[AzureDataLakeRenamer] = None,
+    renamer: AzureDataLakeRenamer,
 ) -> EmittedFile:
-    """Release a staged GRIB via atomic rename.
+    """Release a staged GRIB via Azure Data Lake SDK (fast, bypasses FUSE).
     
     Parameters
     ----------
@@ -507,10 +499,8 @@ def _release_staged_grib(
         Staged GRIB info.
     producer_release_utc:
         Release timestamp.
-    method:
-        'fuse' for os.replace() (slower), 'azure_sdk' for direct SDK (faster).
     renamer:
-        Required if method='azure_sdk'.
+        Azure Data Lake renamer for fast file operations.
     """
     # Build final filename with release timestamp
     final_name = build_emitted_filename(
@@ -532,16 +522,11 @@ def _release_staged_grib(
         "producer_release_utc": producer_release_utc,
     }, indent=2) + "\n"
     
-    if method == "azure_sdk" and renamer is not None:
-        # Fast path: use Azure Data Lake SDK directly (bypasses FUSE)
-        # Write manifest via SDK
-        renamer.write_and_rename(manifest_content, str(final_manifest))
-        # Rename GRIB via SDK
-        renamer.rename(str(staged.staged_path), str(final_path))
-    else:
-        # Fallback: use FUSE mount (slower)
-        final_manifest.write_text(manifest_content)
-        os.replace(staged.staged_path, final_path)
+    # Use Azure Data Lake SDK directly (bypasses FUSE)
+    # Write manifest via SDK
+    renamer.write_and_rename(manifest_content, str(final_manifest))
+    # Rename GRIB via SDK
+    renamer.rename(str(staged.staged_path), str(final_path))
     
     return EmittedFile(
         file_id=staged.file_id,
