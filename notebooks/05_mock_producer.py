@@ -82,7 +82,6 @@ from src.benchmarks.streaming_harness import (
     prepare_all_gribs_locally,
     stage_gribs_to_landing,
     release_staged_gribs,
-    AzureDataLakeRenamer,
 )
 
 # Clear local staging dir
@@ -143,22 +142,18 @@ print(f"✓ Staged {len(staged)} GRIBs in {stage_elapsed:.1f}s ({len(staged)/sta
 # MAGIC ## Phase 3: Release GRIBs at scheduled intervals
 # MAGIC
 # MAGIC Now the GRIBs are staged on the Volume. Each release does:
-# MAGIC 1. Write small manifest JSON to landing zone via Azure SDK
-# MAGIC 2. Atomic rename of GRIB from staging to landing via Azure SDK
+# MAGIC 1. Write small manifest JSON to landing zone via FUSE
+# MAGIC 2. Atomic rename of GRIB from staging to landing via FUSE `os.replace()`
 # MAGIC
-# MAGIC Uses `FileSystemClient` with raw SAS token for fast SDK-based renames.
+# MAGIC Uses FUSE operations (not Azure SDK) so that file notifications are triggered
+# MAGIC for AutoLoader to detect new files. FUSE rename is ~0.6s per 38MB file.
 
 # COMMAND ----------
 
 print(f"Releasing {len(staged)} GRIBs in {MODE} mode...")
 if MODE == "steady":
     print(f"  Expected duration: {len(staged) * STEADY_INTERVAL_S:.0f}s")
-
-# Initialize Azure SDK renamer for fast file operations
-print("  Initializing Azure Data Lake SDK renamer...")
-volume_path = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}"
-renamer = AzureDataLakeRenamer.from_volume_path(volume_path)
-print(f"  ✓ Connected to storage account: {renamer.account_name}")
+print("  Using FUSE for releases (triggers file notifications for AutoLoader)")
 
 release_start = time.time()
 
@@ -166,7 +161,7 @@ emitted, timings = release_staged_gribs(
     staged_gribs=staged,
     mode=MODE,
     steady_interval_s=STEADY_INTERVAL_S,
-    renamer=renamer,  # Use SDK for fast renames
+    renamer=None,  # Use FUSE os.replace() to trigger file notifications
     collect_timings=True,  # Collect timing breakdown for analysis
 )
 

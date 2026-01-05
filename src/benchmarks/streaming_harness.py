@@ -1063,13 +1063,22 @@ def follow_manifests_and_measure(
                     if step_idx is None:
                         continue
 
-                    val = (
-                        ds[ef.variable]
-                        .isel(step=step_idx, number=n_idx, latitude=lat_idx, longitude=lon_idx)
-                        .values
-                    )
-                    if isinstance(val, np.ndarray):
-                        val = val.item()
+                    # Try to read the value, with retry for transient decompression errors
+                    # (can happen if we read a chunk while it's still being written/synced)
+                    try:
+                        val = (
+                            ds[ef.variable]
+                            .isel(step=step_idx, number=n_idx, latitude=lat_idx, longitude=lon_idx)
+                            .values
+                        )
+                        if isinstance(val, np.ndarray):
+                            val = val.item()
+                    except RuntimeError as e:
+                        if "blosc decompression" in str(e).lower():
+                            # Chunk is still being written, treat as NaN for this poll
+                            val = np.nan
+                        else:
+                            raise
 
                     poll_counts[fid]["total_poll_count"] += 1
 
