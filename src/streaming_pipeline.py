@@ -435,12 +435,13 @@ def create_streaming_pipeline(
         reader_options['cloudFiles.useManagedFileEvents'] = 'true'
     
     # Create the streaming DataFrame
-    # Use specific glob pattern to exclude .idx sidecar files and other artifacts
+    # DEBUG: Temporarily removed glob filter to see ALL files AutoLoader detects
+    # Original: .option('pathGlobFilter', '*.{grib,grib2,grb,grb2}')
     stream_df = (
         spark.readStream
         .format('cloudFiles')
         .options(**reader_options)
-        .option('pathGlobFilter', '*.{grib,grib2,grb,grb2}')  # Only actual GRIB files
+        # .option('pathGlobFilter', '*.{grib,grib2,grb,grb2}')  # Disabled for debugging
         .load(config.landing_zone)
         .drop("content")
     )
