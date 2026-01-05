@@ -195,32 +195,35 @@ def create_streaming_pipeline(
         
         batch_start = time.perf_counter()
         
-        # Collect file paths to driver
-        # AutoLoader provides 'path' column with binary file format
+        # Collect manifest file paths from AutoLoader
+        # We watch for .json manifest files since FUSE os.replace() doesn't trigger
+        # file notifications, but write_text() does.
         rows = batch_df.collect()
         
-        # Debug: log what columns and data we received
-        if rows:
-            logger.info(f"Batch {batch_id}: Received {len(rows)} rows, columns: {batch_df.columns}")
-            # Log first few paths for debugging
-            sample_paths = [str(row.asDict()) for row in rows[:3]]
-            logger.info(f"Batch {batch_id}: Sample rows: {sample_paths}")
+        if not rows:
+            logger.info(f"Batch {batch_id}: No manifest files to process")
+            return
         
-        all_paths = [row.path.replace("dbfs:", "") for row in rows]
+        logger.info(f"Batch {batch_id}: Received {len(rows)} manifest files")
         
-        # Filter to only actual GRIB files (safety net in case glob filter misses some)
-        GRIB_EXTENSIONS = {'.grib', '.grib2', '.grb', '.grb2'}
-        file_paths = [
-            p for p in all_paths 
-            if any(p.lower().endswith(ext) for ext in GRIB_EXTENSIONS)
-        ]
-        
-        skipped = len(all_paths) - len(file_paths)
-        if skipped > 0:
-            logger.warning(f"Batch {batch_id}: Skipped {skipped} non-GRIB files: {all_paths[:5]}")
+        # Read each manifest to get the actual GRIB path
+        import json
+        file_paths = []
+        for row in rows:
+            manifest_path = row.path.replace("dbfs:", "")
+            try:
+                with open(manifest_path, 'r') as f:
+                    manifest = json.load(f)
+                grib_path = manifest.get('landing_path')
+                if grib_path and os.path.exists(grib_path):
+                    file_paths.append(grib_path)
+                else:
+                    logger.warning(f"Batch {batch_id}: GRIB not found: {grib_path}")
+            except Exception as e:
+                logger.warning(f"Batch {batch_id}: Failed to read manifest {manifest_path}: {e}")
         
         if not file_paths:
-            logger.info(f"Batch {batch_id}: No GRIB files to process")
+            logger.info(f"Batch {batch_id}: No GRIB files found from manifests")
             return
         
         logger.info(f"Batch {batch_id}: Processing {len(file_paths)} GRIB files (mode={config.processing_mode})")
@@ -435,13 +438,14 @@ def create_streaming_pipeline(
         reader_options['cloudFiles.useManagedFileEvents'] = 'true'
     
     # Create the streaming DataFrame
-    # DEBUG: Temporarily removed glob filter to see ALL files AutoLoader detects
-    # Original: .option('pathGlobFilter', '*.{grib,grib2,grb,grb2}')
+    # NOTE: FUSE os.replace() doesn't trigger file notifications, but write_text() does.
+    # So we watch for .json manifest files (which are written directly) and extract
+    # the GRIB path from the manifest content.
     stream_df = (
         spark.readStream
         .format('cloudFiles')
         .options(**reader_options)
-        # .option('pathGlobFilter', '*.{grib,grib2,grb,grb2}')  # Disabled for debugging
+        .option('pathGlobFilter', '*.grib2.json')  # Watch for manifest files
         .load(config.landing_zone)
         .drop("content")
     )
