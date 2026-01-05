@@ -543,14 +543,13 @@ def _release_staged_grib(
         "producer_release_utc": producer_release_utc,
     }, indent=2) + "\n"
     
-    # Copy GRIB to landing zone (copy triggers file notifications, rename doesn't)
-    import shutil
-    copy_start = time.perf_counter() if collect_timings else 0
-    shutil.copy2(staged.staged_path, final_path)
-    copy_time = time.perf_counter() - copy_start if collect_timings else 0
+    # Atomic rename GRIB from staging to landing (fast, ~0.6s)
+    rename_start = time.perf_counter() if collect_timings else 0
+    os.replace(staged.staged_path, final_path)
+    rename_time = time.perf_counter() - rename_start if collect_timings else 0
     
-    # Write manifest AFTER the GRIB is fully copied
-    # This way when AutoLoader sees the manifest, the GRIB is guaranteed to exist
+    # Write manifest AFTER the GRIB rename completes
+    # The manifest write triggers file notifications, which AutoLoader detects
     manifest_start = time.perf_counter() if collect_timings else 0
     final_manifest.write_text(manifest_content)
     manifest_time = time.perf_counter() - manifest_start if collect_timings else 0
@@ -562,7 +561,7 @@ def _release_staged_grib(
         timing = ReleaseTimings(
             file_id=staged.file_id,
             manifest_write_s=manifest_time,
-            grib_rename_s=copy_time,  # Actually copy time now, not rename
+            grib_rename_s=rename_time,
             total_s=total_time,
         )
     
