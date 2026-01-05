@@ -146,7 +146,7 @@ print(f"✓ Staged {len(staged)} GRIBs in {stage_elapsed:.1f}s ({len(staged)/sta
 # MAGIC 1. Write small manifest JSON to landing zone via Azure SDK
 # MAGIC 2. Atomic rename of GRIB from staging to landing via Azure SDK
 # MAGIC
-# MAGIC Uses Azure Data Lake SDK to bypass FUSE for fast releases (~100ms vs ~2s).
+# MAGIC Uses `FileSystemClient` with raw SAS token for fast SDK-based renames.
 
 # COMMAND ----------
 
@@ -154,7 +154,7 @@ print(f"Releasing {len(staged)} GRIBs in {MODE} mode...")
 if MODE == "steady":
     print(f"  Expected duration: {len(staged) * STEADY_INTERVAL_S:.0f}s")
 
-# Initialize Azure Data Lake SDK renamer
+# Initialize Azure SDK renamer for fast file operations
 print("  Initializing Azure Data Lake SDK renamer...")
 volume_path = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}"
 renamer = AzureDataLakeRenamer.from_volume_path(volume_path)
@@ -162,15 +162,45 @@ print(f"  ✓ Connected to storage account: {renamer.account_name}")
 
 release_start = time.time()
 
-emitted = release_staged_gribs(
+emitted, timings = release_staged_gribs(
     staged_gribs=staged,
     mode=MODE,
     steady_interval_s=STEADY_INTERVAL_S,
-    renamer=renamer,
+    renamer=renamer,  # Use SDK for fast renames
+    collect_timings=True,  # Collect timing breakdown for analysis
 )
 
 release_elapsed = time.time() - release_start
 print(f"✓ Released {len(emitted)} files in {release_elapsed:.1f}s ({len(emitted)/release_elapsed:.1f} files/sec)")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Release Timing Breakdown
+
+# COMMAND ----------
+
+if timings:
+    manifest_times = [t.manifest_write_s for t in timings]
+    rename_times = [t.grib_rename_s for t in timings]
+    total_times = [t.total_s for t in timings]
+    
+    print("Release Timing Breakdown:")
+    print("=" * 50)
+    print(f"  Manifest write:  avg={sum(manifest_times)/len(manifest_times):.3f}s  "
+          f"min={min(manifest_times):.3f}s  max={max(manifest_times):.3f}s")
+    print(f"  GRIB rename:     avg={sum(rename_times)/len(rename_times):.3f}s  "
+          f"min={min(rename_times):.3f}s  max={max(rename_times):.3f}s")
+    print(f"  Total per file:  avg={sum(total_times)/len(total_times):.3f}s  "
+          f"min={min(total_times):.3f}s  max={max(total_times):.3f}s")
+    print()
+    
+    avg_total = sum(total_times) / len(total_times)
+    if avg_total < 1.0:
+        print(f"✓ Average release time ({avg_total:.3f}s) is under 1s target")
+    else:
+        print(f"✗ Average release time ({avg_total:.3f}s) exceeds 1s target")
+        print(f"  Bottleneck: {'Manifest write' if sum(manifest_times) > sum(rename_times) else 'GRIB rename'}")
 
 # COMMAND ----------
 

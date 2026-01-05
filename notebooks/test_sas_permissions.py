@@ -135,8 +135,7 @@ print(f"✓ Created test file via FUSE: {test_file_1}")
 
 # COMMAND ----------
 
-from azure.storage.filedatalake import DataLakeServiceClient
-from azure.core.credentials import AzureSasCredential
+from azure.storage.filedatalake import FileSystemClient
 import re
 
 # Parse storage URL
@@ -159,49 +158,29 @@ dest_path = f"{base_path}/_sas_test/test_dest.txt"
 print(f"Source path: {source_path}")
 print(f"Dest path: {dest_path}")
 
+# Initialize FileSystemClient with raw SAS token (not AzureSasCredential!)
+# This is the key - using the token directly makes rename work
+fs_client = FileSystemClient(account_url, container, credential=sas_token)
+
 # COMMAND ----------
 
-# Try the rename operation with different path formats
-service_client = DataLakeServiceClient(account_url, credential=AzureSasCredential(sas_token))
-fs_client = service_client.get_file_system_client(container)
+# Try rename with FileSystemClient (raw SAS token)
 file_client = fs_client.get_file_client(source_path)
 
 print("Source file client path:", file_client.path_name)
 print("File URL:", file_client.url)
 
-# Try multiple destination path formats
-dest_formats = [
-    ("container/full_path", f"{container}/{dest_path}"),
-    ("full_path_only", dest_path),
-    ("relative_to_base", "_sas_test/test_dest.txt"),
-    ("just_filename", "test_dest.txt"),
-]
+# The working format: container/full_path
+new_name = f"{container}/{dest_path}"
+print(f"\nAttempting rename to: {new_name}")
 
-for format_name, dest in dest_formats:
-    # Recreate source file for each test
-    with open(test_file_1, 'w') as f:
-        f.write("test content")
-    
-    print(f"\nAttempting rename with format '{format_name}':")
-    print(f"  Destination: {dest}")
-    
-    # Get fresh file client
-    file_client = fs_client.get_file_client(source_path)
-    
-    try:
-        file_client.rename_file(dest)
-        print(f"  ✓ Rename succeeded with format: {format_name}")
-        # Clean up dest file
-        try:
-            fs_client.get_file_client(dest_path).delete_file()
-        except:
-            pass
-        break
-    except Exception as e:
-        error_code = getattr(e, 'error_code', 'unknown')
-        print(f"  ✗ Failed: {error_code}")
-        if "AuthorizationPermissionMismatch" not in str(e):
-            print(f"    {e}")
+try:
+    file_client.rename_file(new_name)
+    print("✓ Rename succeeded!")
+    # Clean up
+    fs_client.get_file_client(dest_path).delete_file()
+except Exception as e:
+    print(f"✗ Rename failed: {e}")
 
 # COMMAND ----------
 
@@ -288,7 +267,7 @@ if content:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 8: Benchmark copy+delete with GRIB-sized file
+# MAGIC ## Step 8: Benchmark SDK rename with GRIB-sized file
 
 # COMMAND ----------
 
@@ -309,51 +288,26 @@ print(f"✓ Created {GRIB_SIZE_MB}MB file")
 
 # COMMAND ----------
 
-# Benchmark: Copy + Delete via Azure SDK
+# Benchmark: SDK Rename (should work now with FileSystemClient)
 large_source_path = f"{base_path}/_sas_test/large_source.bin"
 large_dest_path = f"{base_path}/_sas_test/large_dest.bin"
 
 source_client = fs_client.get_file_client(large_source_path)
-dest_client = fs_client.get_file_client(large_dest_path)
 
-print(f"\nBenchmarking copy+delete for {GRIB_SIZE_MB}MB file via Azure SDK...")
+print(f"\nBenchmarking SDK rename for {GRIB_SIZE_MB}MB file...")
 print("=" * 50)
 
-# Time the full operation
-total_start = time.perf_counter()
-
-# Step 1: Read
-read_start = time.perf_counter()
-download = source_client.download_file()
-content = download.readall()
-read_time = time.perf_counter() - read_start
-print(f"  Read:   {read_time:.3f}s ({len(content)/1024/1024:.1f}MB)")
-
-# Step 2: Write
-write_start = time.perf_counter()
-dest_client.create_file()
-# Write in chunks for large files
-chunk_size = 4 * 1024 * 1024  # 4MB chunks
-offset = 0
-while offset < len(content):
-    chunk = content[offset:offset + chunk_size]
-    dest_client.append_data(chunk, offset)
-    offset += len(chunk)
-dest_client.flush_data(len(content))
-write_time = time.perf_counter() - write_start
-print(f"  Write:  {write_time:.3f}s")
-
-# Step 3: Delete source
-delete_start = time.perf_counter()
-source_client.delete_file()
-delete_time = time.perf_counter() - delete_start
-print(f"  Delete: {delete_time:.3f}s")
-
-total_time = time.perf_counter() - total_start
-print(f"  ─────────────────")
-print(f"  TOTAL:  {total_time:.3f}s")
-print()
-print(f"Throughput: {GRIB_SIZE_MB/total_time:.1f} MB/s")
+rename_start = time.perf_counter()
+try:
+    new_name = f"{container}/{large_dest_path}"
+    source_client.rename_file(new_name)
+    sdk_rename_time = time.perf_counter() - rename_start
+    print(f"  SDK rename: {sdk_rename_time:.3f}s")
+    sdk_rename_worked = True
+except Exception as e:
+    print(f"  SDK rename failed: {e}")
+    sdk_rename_time = None
+    sdk_rename_worked = False
 
 # COMMAND ----------
 
@@ -361,7 +315,7 @@ print(f"Throughput: {GRIB_SIZE_MB/total_time:.1f} MB/s")
 print("\nBenchmarking os.replace() via FUSE mount...")
 print("=" * 50)
 
-# Recreate source file
+# Recreate source file at large_source (the SDK rename moved it to large_dest)
 with open(large_source, 'wb') as f:
     chunk = b'x' * (1024 * 1024)
     for _ in range(GRIB_SIZE_MB):
@@ -378,19 +332,27 @@ print(f"  FUSE rename: {fuse_time:.3f}s")
 print("\n" + "=" * 50)
 print("COMPARISON SUMMARY")
 print("=" * 50)
-print(f"  Azure SDK copy+delete: {total_time:.3f}s")
-print(f"  FUSE os.replace():     {fuse_time:.3f}s")
-print()
-if total_time < fuse_time:
-    speedup = fuse_time / total_time
-    print(f"  → Azure SDK is {speedup:.1f}x FASTER")
+if sdk_rename_worked:
+    print(f"  Azure SDK rename:  {sdk_rename_time:.3f}s")
 else:
-    slowdown = total_time / fuse_time
+    print(f"  Azure SDK rename:  FAILED")
+print(f"  FUSE os.replace(): {fuse_time:.3f}s")
+print()
+if sdk_rename_worked and sdk_rename_time < fuse_time:
+    speedup = fuse_time / sdk_rename_time
+    print(f"  → Azure SDK is {speedup:.1f}x FASTER")
+elif sdk_rename_worked:
+    slowdown = sdk_rename_time / fuse_time
     print(f"  → Azure SDK is {slowdown:.1f}x SLOWER")
+else:
+    print(f"  → SDK rename failed, FUSE is the only option")
 print()
 print(f"At 1 file/second rate:")
-print(f"  Azure SDK: {'✓ feasible' if total_time < 1.0 else '✗ too slow'} ({total_time:.2f}s per file)")
-print(f"  FUSE:      {'✓ feasible' if fuse_time < 1.0 else '✗ too slow'} ({fuse_time:.2f}s per file)")
+if sdk_rename_worked:
+    print(f"  Azure SDK: {'✓ feasible' if sdk_rename_time < 1.0 else '✗ too slow'} ({sdk_rename_time:.3f}s per file)")
+else:
+    print(f"  Azure SDK: N/A (rename failed)")
+print(f"  FUSE:      {'✓ feasible' if fuse_time < 1.0 else '✗ too slow'} ({fuse_time:.3f}s per file)")
 
 # COMMAND ----------
 
@@ -411,11 +373,7 @@ except Exception as e:
 # MAGIC %md
 # MAGIC ## Summary
 # MAGIC
-# MAGIC **If rename fails but copy+delete works:**
-# MAGIC - The SAS token has the right permissions, but the `rename_file()` API has specific requirements
-# MAGIC - We can use copy+delete as an alternative (might be slightly slower but should still be fast for small files)
+# MAGIC **Key finding:** Using `FileSystemClient` directly with the raw SAS token (not `AzureSasCredential`) makes rename work!
 # MAGIC
-# MAGIC **If both fail:**
-# MAGIC - There may be path scoping issues with how the SAS token is generated
-# MAGIC - Check the exact error messages for clues
+# MAGIC If SDK rename is faster than FUSE and under 1 second, we should use it for releasing files.
 

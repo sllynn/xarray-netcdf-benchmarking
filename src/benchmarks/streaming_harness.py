@@ -79,7 +79,12 @@ class AzureDataLakeRenamer:
         self.container_name = container_name
         self.sas_token = sas_token
         self.volume_base_path = volume_base_path  # e.g., 'lseg/netcdf'
-        self._file_system_client = None
+        
+        # Initialize FileSystemClient once with SAS token as credential
+        # (using raw token, not AzureSasCredential wrapper - this is key for rename to work)
+        from azure.storage.filedatalake import FileSystemClient
+        account_url = f"https://{account_name}.dfs.core.windows.net"
+        self._fs_client = FileSystemClient(account_url, container_name, credential=sas_token)
     
     @classmethod
     def from_volume_path(cls, volume_path: str) -> "AzureDataLakeRenamer":
@@ -137,16 +142,7 @@ class AzureDataLakeRenamer:
     
     def _get_file_client(self, blob_path: str):
         """Get a DataLakeFileClient for the given blob path."""
-        from azure.storage.filedatalake import DataLakeServiceClient
-        from azure.core.credentials import AzureSasCredential
-        
-        # Create service client with SAS credential
-        account_url = f"https://{self.account_name}.dfs.core.windows.net"
-        credential = AzureSasCredential(self.sas_token)
-        
-        service_client = DataLakeServiceClient(account_url, credential=credential)
-        file_system_client = service_client.get_file_system_client(self.container_name)
-        return file_system_client.get_file_client(blob_path)
+        return self._fs_client.get_file_client(blob_path)
     
     def rename(self, source_path: str, dest_path: str) -> None:
         """Rename a file using Azure Data Lake SDK (fast, bypasses FUSE).
@@ -434,16 +430,24 @@ def stage_gribs_to_landing(
     return staged
 
 
+@dataclass
+class ReleaseTimings:
+    """Timing breakdown for a single release operation."""
+    file_id: str
+    manifest_write_s: float
+    grib_rename_s: float
+    total_s: float
+
+
 def release_staged_gribs(
     *,
     staged_gribs: list[_StagedGrib],
     mode: ArrivalMode,
     steady_interval_s: float = 1.0,
-    renamer: AzureDataLakeRenamer,
-) -> list[EmittedFile]:
+    renamer: Optional[AzureDataLakeRenamer] = None,
+    collect_timings: bool = False,
+) -> tuple[list[EmittedFile], list[ReleaseTimings]]:
     """Phase 3: Release pre-staged GRIBs at scheduled intervals.
-    
-    Uses Azure Data Lake SDK for fast renames that bypass FUSE overhead.
     
     Parameters
     ----------
@@ -454,20 +458,26 @@ def release_staged_gribs(
     steady_interval_s:
         Interval between releases in steady mode.
     renamer:
-        Azure Data Lake renamer for fast file operations.
+        Optional AzureDataLakeRenamer for fast SDK-based renames.
+        If None, uses FUSE os.replace() (slower but always works).
+    collect_timings:
+        If True, collect detailed timing breakdowns for debugging.
     
     Returns
     -------
-    list of EmittedFile records
+    tuple of (list of EmittedFile records, list of ReleaseTimings)
     """
     emitted: list[EmittedFile] = []
+    timings: list[ReleaseTimings] = []
     
     if mode == "burst":
         for sg in staged_gribs:
             release_utc = utc_now_iso()
-            rec = _release_staged_grib(sg, release_utc, renamer=renamer)
+            rec, timing = _release_staged_grib(sg, release_utc, renamer=renamer, collect_timings=collect_timings)
             emitted.append(rec)
-        return emitted
+            if timing:
+                timings.append(timing)
+        return emitted, timings
     
     # Steady mode: release at fixed cadence
     start = time.perf_counter()
@@ -480,18 +490,24 @@ def release_staged_gribs(
             time.sleep(sleep_s)
         
         release_utc = utc_now_iso()
-        rec = _release_staged_grib(sg, release_utc, renamer=renamer)
+        rec, timing = _release_staged_grib(sg, release_utc, renamer=renamer, collect_timings=collect_timings)
         emitted.append(rec)
+        if timing:
+            timings.append(timing)
     
-    return emitted
+    return emitted, timings
 
 
 def _release_staged_grib(
     staged: _StagedGrib,
     producer_release_utc: str,
-    renamer: AzureDataLakeRenamer,
-) -> EmittedFile:
-    """Release a staged GRIB via Azure Data Lake SDK (fast, bypasses FUSE).
+    renamer: Optional[AzureDataLakeRenamer] = None,
+    collect_timings: bool = False,
+) -> tuple[EmittedFile, Optional[ReleaseTimings]]:
+    """Release a staged GRIB via atomic rename.
+    
+    Uses Azure SDK rename if renamer is provided (faster), otherwise
+    falls back to FUSE os.replace().
     
     Parameters
     ----------
@@ -500,8 +516,12 @@ def _release_staged_grib(
     producer_release_utc:
         Release timestamp.
     renamer:
-        Azure Data Lake renamer for fast file operations.
+        Optional SDK renamer for fast operations.
+    collect_timings:
+        If True, return timing breakdown.
     """
+    total_start = time.perf_counter() if collect_timings else 0
+    
     # Build final filename with release timestamp
     final_name = build_emitted_filename(
         staged.variable,
@@ -522,13 +542,34 @@ def _release_staged_grib(
         "producer_release_utc": producer_release_utc,
     }, indent=2) + "\n"
     
-    # Use Azure Data Lake SDK directly (bypasses FUSE)
-    # Write manifest via SDK
-    renamer.write_and_rename(manifest_content, str(final_manifest))
-    # Rename GRIB via SDK
-    renamer.rename(str(staged.staged_path), str(final_path))
+    # Write manifest
+    manifest_start = time.perf_counter() if collect_timings else 0
+    if renamer:
+        renamer.write_file(manifest_content, str(final_manifest))
+    else:
+        final_manifest.write_text(manifest_content)
+    manifest_time = time.perf_counter() - manifest_start if collect_timings else 0
     
-    return EmittedFile(
+    # Atomic rename GRIB
+    rename_start = time.perf_counter() if collect_timings else 0
+    if renamer:
+        renamer.rename(str(staged.staged_path), str(final_path))
+    else:
+        os.replace(staged.staged_path, final_path)
+    rename_time = time.perf_counter() - rename_start if collect_timings else 0
+    
+    total_time = time.perf_counter() - total_start if collect_timings else 0
+    
+    timing = None
+    if collect_timings:
+        timing = ReleaseTimings(
+            file_id=staged.file_id,
+            manifest_write_s=manifest_time,
+            grib_rename_s=rename_time,
+            total_s=total_time,
+        )
+    
+    emitted = EmittedFile(
         file_id=staged.file_id,
         variable=staged.variable,
         forecast_hour=staged.forecast_hour,
@@ -537,6 +578,8 @@ def _release_staged_grib(
         producer_write_start_utc=staged.producer_write_start_utc,
         producer_release_utc=producer_release_utc,
     )
+    
+    return emitted, timing
 
 
 def _prepare_grib(
