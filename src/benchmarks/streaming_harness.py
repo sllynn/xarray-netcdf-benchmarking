@@ -374,7 +374,7 @@ def stage_gribs_to_landing(
 ) -> list[_StagedGrib]:
     """Phase 2: Copy all prepared GRIBs from local disk to Volume staging directory.
     
-    This can be slow (Volume I/O) but happens once before the timed test.
+    Uses azcopy for fast bulk sync. Always clears the staging directory first.
     
     IMPORTANT: The staging directory should be OUTSIDE the landing zone to avoid
     AutoLoader picking up files prematurely. By default, uses a sibling directory
@@ -397,6 +397,7 @@ def stage_gribs_to_landing(
     list of _StagedGrib ready for fast release
     """
     import shutil
+    from ..cloud_sync import CloudSyncer
     
     landing_path = Path(landing_dir)
     
@@ -406,13 +407,21 @@ def stage_gribs_to_landing(
     else:
         staging_dir = landing_path.parent / "_grib_staging"
     
-    staging_dir.mkdir(parents=True, exist_ok=True)
+    # Always clear the staging directory before sync
+    if staging_dir.exists():
+        shutil.rmtree(staging_dir)
     
+    # Use azcopy to bulk sync all files at once (fast, parallel)
+    syncer = CloudSyncer.from_volume_path(str(staging_dir))
+    result = syncer.sync(local_staging_dir)
+    
+    if not result.success:
+        raise RuntimeError(f"azcopy staging failed: {result.error}")
+    
+    # Build the staged list based on prepared files
     staged = []
     for file_id, variable, forecast_hour, local_path, producer_write_start in prepared:
-        # Copy to staging directory (outside landing zone)
         staged_path = staging_dir / f"{file_id}.grib2"
-        shutil.copy2(local_path, staged_path)
         
         staged.append(_StagedGrib(
             file_id=file_id,

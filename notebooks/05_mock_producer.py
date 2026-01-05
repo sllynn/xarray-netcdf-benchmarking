@@ -129,11 +129,7 @@ print(f"✓ Generated {len(prepared)} GRIBs in {gen_elapsed:.1f}s ({len(prepared
 
 Path(LANDING_ZONE).mkdir(parents=True, exist_ok=True)
 
-# Clear volume staging directory from previous runs
-if Path(VOLUME_STAGING_DIR).exists():
-    shutil.rmtree(VOLUME_STAGING_DIR)
-
-print(f"Staging {len(prepared)} GRIBs to {VOLUME_STAGING_DIR}...")
+print(f"Staging {len(prepared)} GRIBs to {VOLUME_STAGING_DIR} via azcopy...")
 print(f"  (Outside landing zone to avoid AutoLoader)")
 stage_start = time.time()
 
