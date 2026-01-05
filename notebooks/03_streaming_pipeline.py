@@ -278,6 +278,31 @@ print(f"  Status: {manager.status}")
 
 # COMMAND ----------
 
+from src.region_writer import cleanup_staging_dir, DEFAULT_STAGING_DIR
+
+# Clear any leftover files from previous runs
+cleanup_staging_dir(DEFAULT_STAGING_DIR)
+print(f"✓ Cleared staging directory: {DEFAULT_STAGING_DIR}")
+
+# Create pipeline manager
+manager = PipelineManager(spark, config)
+
+# Start the pipeline
+manager.start()
+  
+print(f"✓ Pipeline started")
+print(f"  Query ID: {manager.query.id}")
+print(f"  Status: {manager.status}")
+
+# COMMAND ----------
+
+sq = spark.streams.active[0]  # choose the stream you want
+for p in sq.recentProgress:
+    metrics = p["sources"][0]["metrics"] if p["sources"] else {}
+    print(p["batchId"], p["timestamp"], metrics.get("approximateQueueSize"), metrics.get("numFilesOutstanding"))
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Monitor Pipeline Progress
 # MAGIC
@@ -320,14 +345,18 @@ print(f"\nFinal metrics: {manager.get_metrics()}")
 
 # COMMAND ----------
 
+
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Stop Pipeline (when done)
 
 # COMMAND ----------
 
 # Stop the pipeline when you're done
-manager.stop()
-print("✓ Pipeline stopped")
+# manager.stop()
+# print("✓ Pipeline stopped")
 
 # COMMAND ----------
 
@@ -389,19 +418,19 @@ print("✓ Pipeline stopped")
 
 # COMMAND ----------
 
-metrics = manager.get_metrics()
+# metrics = manager.get_metrics()
 
-if metrics.get('avg_processing_time_ms') and metrics.get('avg_sync_time_ms'):
-    avg_latency = metrics['avg_processing_time_ms'] + metrics['avg_sync_time_ms']
-    target_latency = 30000  # 30 seconds in ms
+# if metrics.get('avg_processing_time_ms') and metrics.get('avg_sync_time_ms'):
+#     avg_latency = metrics['avg_processing_time_ms'] + metrics['avg_sync_time_ms']
+#     target_latency = 30000  # 30 seconds in ms
     
-    print(f"Average batch latency: {avg_latency:.1f}ms")
-    print(f"Target: <{target_latency}ms")
+#     print(f"Average batch latency: {avg_latency:.1f}ms")
+#     print(f"Target: <{target_latency}ms")
     
-    if avg_latency < target_latency:
-        print(f"\n✓ PASS: Latency {avg_latency:.1f}ms < {target_latency}ms target")
-    else:
-        print(f"\n✗ FAIL: Latency {avg_latency:.1f}ms >= {target_latency}ms target")
-else:
-    print("No metrics available yet. Pipeline may not have processed any batches.")
+#     if avg_latency < target_latency:
+#         print(f"\n✓ PASS: Latency {avg_latency:.1f}ms < {target_latency}ms target")
+#     else:
+#         print(f"\n✗ FAIL: Latency {avg_latency:.1f}ms >= {target_latency}ms target")
+# else:
+#     print("No metrics available yet. Pipeline may not have processed any batches.")
 
