@@ -402,9 +402,10 @@ def stage_gribs_to_landing(
     else:
         staging_dir = landing_path.parent / "_grib_staging"
     
-    # Always clear the staging directory before sync
+    # Always clear the staging directory before sync, then recreate it
     if staging_dir.exists():
         shutil.rmtree(staging_dir)
+    staging_dir.mkdir(parents=True, exist_ok=True)
     
     # Use azcopy to bulk sync all files at once (fast, parallel)
     syncer = CloudSyncer.from_volume_path(str(staging_dir))
@@ -542,21 +543,17 @@ def _release_staged_grib(
         "producer_release_utc": producer_release_utc,
     }, indent=2) + "\n"
     
-    # Write manifest
-    manifest_start = time.perf_counter() if collect_timings else 0
-    if renamer:
-        renamer.write_file(manifest_content, str(final_manifest))
-    else:
-        final_manifest.write_text(manifest_content)
-    manifest_time = time.perf_counter() - manifest_start if collect_timings else 0
+    # Copy GRIB to landing zone (copy triggers file notifications, rename doesn't)
+    import shutil
+    copy_start = time.perf_counter() if collect_timings else 0
+    shutil.copy2(staged.staged_path, final_path)
+    copy_time = time.perf_counter() - copy_start if collect_timings else 0
     
-    # Atomic rename GRIB
-    rename_start = time.perf_counter() if collect_timings else 0
-    if renamer:
-        renamer.rename(str(staged.staged_path), str(final_path))
-    else:
-        os.replace(staged.staged_path, final_path)
-    rename_time = time.perf_counter() - rename_start if collect_timings else 0
+    # Write manifest AFTER the GRIB is fully copied
+    # This way when AutoLoader sees the manifest, the GRIB is guaranteed to exist
+    manifest_start = time.perf_counter() if collect_timings else 0
+    final_manifest.write_text(manifest_content)
+    manifest_time = time.perf_counter() - manifest_start if collect_timings else 0
     
     total_time = time.perf_counter() - total_start if collect_timings else 0
     
@@ -565,7 +562,7 @@ def _release_staged_grib(
         timing = ReleaseTimings(
             file_id=staged.file_id,
             manifest_write_s=manifest_time,
-            grib_rename_s=rename_time,
+            grib_rename_s=copy_time,  # Actually copy time now, not rename
             total_s=total_time,
         )
     
