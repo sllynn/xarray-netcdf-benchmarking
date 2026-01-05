@@ -165,7 +165,7 @@ class AzureDataLakeRenamer:
         new_name = f"{self.container_name}/{dest_blob}"
         file_client.rename_file(new_name=new_name)
     
-    def write_and_rename(
+    def write_file(
         self,
         content: str,
         dest_path: str,

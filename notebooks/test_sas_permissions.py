@@ -5,6 +5,15 @@
 # MAGIC Quick diagnostic to check what permissions are granted by Databricks temporary_path_credentials.
 
 # COMMAND ----------
+# MAGIC %pip install uv
+# COMMAND ----------
+# MAGIC %sh uv pip install -r ../requirements.lock
+
+# COMMAND ----------
+# MAGIC %restart_python
+
+# COMMAND ----------
+
 
 # Configuration - adjust to match your setup
 CATALOG = "stuart"
