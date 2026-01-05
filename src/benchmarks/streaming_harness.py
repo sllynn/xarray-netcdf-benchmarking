@@ -32,7 +32,7 @@ import json
 import os
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -107,6 +107,116 @@ def write_manifest_json(manifest_path: Path, payload: dict) -> None:
     os.replace(tmp_path, manifest_path)  # atomic rename
 
 
+@dataclass
+class _PreparedGrib:
+    """Internal: a GRIB that has been generated but not yet released."""
+    file_id: str
+    variable: str
+    forecast_hour: int
+    staged_payload: Path
+    landing_path: Path
+    producer_write_start_utc: str
+
+
+def _prepare_grib(
+    *,
+    landing_dir: str,
+    variable: str,
+    forecast_hour: int,
+    reference_time_iso: Optional[str] = None,
+) -> _PreparedGrib:
+    """Generate a GRIB into staging (slow). Does NOT release to landing zone yet.
+    
+    This is the CPU-intensive part that can be parallelized in background workers.
+    """
+    from generate_mock_data import generate_mock_file
+
+    landing_path = Path(landing_dir)
+    landing_path.mkdir(parents=True, exist_ok=True)
+
+    file_id = uuid.uuid4().hex
+    producer_write_start = utc_now_iso()
+
+    tmp_dir = landing_path / "_tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    reference_time = None
+    if reference_time_iso is not None:
+        reference_time = datetime.fromisoformat(reference_time_iso.replace("Z", "+00:00"))
+
+    generated_path = generate_mock_file(
+        output_dir=tmp_dir,
+        variable=variable,
+        forecast_hour=forecast_hour,
+        reference_time=reference_time or datetime.now(timezone.utc),
+        output_format="grib",
+    )
+
+    # Move to staged location (still in _tmp, but with our naming)
+    staged_payload = tmp_dir / f"{file_id}.grib2.staged"
+    os.replace(generated_path, staged_payload)
+
+    # Compute final landing path (will be renamed to this at release time)
+    # We don't know the release timestamp yet, so use a placeholder in the filename
+    final_path = landing_path / f"{variable}_step{forecast_hour:03d}_{file_id}.grib2"
+
+    return _PreparedGrib(
+        file_id=file_id,
+        variable=variable,
+        forecast_hour=forecast_hour,
+        staged_payload=staged_payload,
+        landing_path=final_path,
+        producer_write_start_utc=producer_write_start,
+    )
+
+
+def _release_prepared_grib(
+    prepared: _PreparedGrib,
+    producer_release_utc: str,
+) -> EmittedFile:
+    """Release a prepared GRIB to the landing zone (fast atomic rename).
+    
+    This is the time-critical part that should happen at the exact release moment.
+    """
+    # Build the final filename with the actual release timestamp
+    final_name = build_emitted_filename(
+        prepared.variable,
+        prepared.forecast_hour,
+        prepared.file_id,
+        producer_release_utc,
+    )
+    final_path = prepared.landing_path.parent / final_name
+    final_manifest = final_path.with_suffix(final_path.suffix + ".json")
+
+    # Write manifest (small, fast)
+    staged_manifest = prepared.staged_payload.with_suffix(".json")
+    write_manifest_json(
+        staged_manifest,
+        {
+            "file_id": prepared.file_id,
+            "variable": prepared.variable,
+            "forecast_hour": prepared.forecast_hour,
+            "landing_path": str(final_path),
+            "producer_write_start_utc": prepared.producer_write_start_utc,
+            "producer_release_utc": producer_release_utc,
+        },
+    )
+
+    # Atomic release: rename staged -> final
+    os.replace(prepared.staged_payload, final_path)
+    os.replace(staged_manifest, final_manifest)
+
+    return EmittedFile(
+        file_id=prepared.file_id,
+        variable=prepared.variable,
+        forecast_hour=prepared.forecast_hour,
+        landing_path=str(final_path),
+        manifest_path=str(final_manifest),
+        producer_write_start_utc=prepared.producer_write_start_utc,
+        producer_release_utc=producer_release_utc,
+    )
+
+
 def emit_one_grib(
     *,
     landing_dir: str,
@@ -145,77 +255,17 @@ def emit_one_grib(
     EmittedFile
         Metadata for correlation and later latency computation.
     """
-    # Import locally so this module can be imported in environments that don't
-    # necessarily have eccodes installed.
-    from generate_mock_data import generate_mock_file
-
-    landing_path = Path(landing_dir)
-    landing_path.mkdir(parents=True, exist_ok=True)
-
-    file_id = uuid.uuid4().hex
-
-    producer_write_start = utc_now_iso()
-
-    # Use a staging name then atomic rename to avoid AutoLoader seeing partial writes.
-    # IMPORTANT: this staging directory is still within the landing mount, so
-    # os.replace() remains a same-mount rename.
-    tmp_dir = landing_path / "_tmp"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-
-    # Generate into temp dir with generator's default filename, then rename.
-    reference_time = None
-    if reference_time_iso is not None:
-        reference_time = datetime.fromisoformat(reference_time_iso.replace("Z", "+00:00"))
-
-    # IMPORTANT: reference_time affects how the pipeline maps into the pre-allocated
-    # forecast cycle. If you are initializing the Zarr store for a specific cycle,
-    # pass the same reference time here (e.g. cycle start).
-    generated_path = generate_mock_file(
-        output_dir=tmp_dir,
+    prepared = _prepare_grib(
+        landing_dir=landing_dir,
         variable=variable,
         forecast_hour=forecast_hour,
-        reference_time=reference_time or datetime.now(timezone.utc),
-        output_format="grib",
+        reference_time_iso=reference_time_iso,
     )
-
+    
     if producer_release_utc is None:
         producer_release_utc = utc_now_iso()
-
-    final_name = build_emitted_filename(variable, forecast_hour, file_id, producer_release_utc)
-    final_path = landing_path / final_name
-
-    # Stage both payload + manifest using non-matching names, then rename into place.
-    staged_payload = final_path.with_suffix(final_path.suffix + ".partial")
-    os.replace(generated_path, staged_payload)
-
-    staged_manifest = staged_payload.with_suffix(staged_payload.suffix + ".json")
-    final_manifest = final_path.with_suffix(final_path.suffix + ".json")
-
-    write_manifest_json(
-        staged_manifest,
-        {
-            "file_id": file_id,
-            "variable": variable,
-            "forecast_hour": forecast_hour,
-            "landing_path": str(final_path),
-            "producer_write_start_utc": producer_write_start,
-            "producer_release_utc": producer_release_utc,
-        },
-    )
-
-    # Release moment: rename staged -> final so AutoLoader first sees `*.grib2` here.
-    os.replace(staged_payload, final_path)
-    os.replace(staged_manifest, final_manifest)
-
-    return EmittedFile(
-        file_id=file_id,
-        variable=variable,
-        forecast_hour=forecast_hour,
-        landing_path=str(final_path),
-        manifest_path=str(final_manifest),
-        producer_write_start_utc=producer_write_start,
-        producer_release_utc=producer_release_utc,
-    )
+    
+    return _release_prepared_grib(prepared, producer_release_utc)
 
 
 def emit_schedule(
@@ -279,22 +329,29 @@ def emit_schedule(
                 emitted.append(fut.result())
         return emitted
 
-    # Steady mode: release at a fixed cadence, but overlap generation with a pool.
-    # We do this by keeping a small backlog of in-flight emits.
+    # Steady mode: release at a fixed cadence, but overlap GRIB generation in background.
+    # Workers pre-generate GRIBs into staging; main thread releases at scheduled times.
     cadence_s = steady_interval_s
     start = time.perf_counter()
 
+    def _prepare(args: tuple[str, int]) -> _PreparedGrib:
+        """Background worker: generate GRIB into staging (slow)."""
+        var, fh = args
+        return _prepare_grib(
+            landing_dir=landing_dir,
+            variable=var,
+            forecast_hour=fh,
+        )
+
     with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
         next_to_schedule = 0
-        in_flight: dict[int, object] = {}
+        in_flight: dict[int, Future[_PreparedGrib]] = {}
 
         def _schedule_one(i: int) -> None:
-            # Background work is limited to preparing CPU-heavy GRIB generation.
-            # We avoid writing/renaming into the landing directory early because
-            # that can race with downstream readers.
-            in_flight[i] = ex.submit(lambda args=plan_list[i]: args)
+            # Schedule background GRIB generation (CPU-heavy work).
+            in_flight[i] = ex.submit(_prepare, plan_list[i])
 
-        # Prime the pipeline
+        # Prime the pipeline: start preparing several GRIBs ahead of time
         while next_to_schedule < len(plan_list) and len(in_flight) < max(1, workers):
             _schedule_one(next_to_schedule)
             next_to_schedule += 1
@@ -306,21 +363,20 @@ def emit_schedule(
             if sleep_s > 0:
                 time.sleep(sleep_s)
 
-            # Ensure the i-th item is scheduled.
+            # Ensure the i-th item is scheduled (defensive).
             if i not in in_flight:
                 _schedule_one(i)
                 next_to_schedule = max(next_to_schedule, i + 1)
 
-            # Release time: compute the scheduled release timestamp, then emit the
-            # file+manifest at that moment.
+            # Wait for GRIB preparation to complete (should already be done if workers > 0)
+            prepared = in_flight.pop(i).result()
+
+            # Release time: atomic rename into landing zone (fast)
             release_utc = utc_now_iso()
-
-            _ = in_flight.pop(i).result()  # no-op placeholder (keeps structure)
-
-            rec = _emit(plan_list[i], release_utc=release_utc)
+            rec = _release_prepared_grib(prepared, release_utc)
             emitted.append(rec)
 
-            # Keep the backlog full.
+            # Keep the backlog full: schedule more background preparations
             while next_to_schedule < len(plan_list) and len(in_flight) < max(1, workers):
                 _schedule_one(next_to_schedule)
                 next_to_schedule += 1
