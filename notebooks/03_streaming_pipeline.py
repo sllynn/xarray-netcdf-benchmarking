@@ -41,7 +41,7 @@ CLOUD_DESTINATION = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/silver/forecast.
 CHECKPOINT_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/checkpoints/grib_pipeline"
 
 # Processing parameters
-MAX_FILES_PER_BATCH = 32
+MAX_FILES_PER_BATCH = 4
 NUM_WORKERS = 32  # Direct zarr writes don't have lock contention
 TRIGGER_INTERVAL = "0 seconds"  # Process immediately (no buffering)
 
