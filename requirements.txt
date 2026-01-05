@@ -19,6 +19,7 @@ h5netcdf==1.3.0
 
 adlfs==2025.8.0
 azure-storage-blob==12.27.1  # For direct blob downloads (faster than azcopy for small batches)
+azure-storage-file-datalake==12.19.0  # For fast atomic renames bypassing FUSE
 aiohttp==3.13.2  # Async HTTP for azure-storage-blob
 #kerchunk==0.2.9
 fsspec==2025.10.0

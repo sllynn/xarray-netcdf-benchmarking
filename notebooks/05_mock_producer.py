@@ -49,6 +49,11 @@ VOLUME_STAGING_DIR = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/_grib_staging/"
 MODE = "steady"  # 'steady' or 'burst'
 STEADY_INTERVAL_S = 1.0
 
+# Release method: 'fuse' or 'azure_sdk'
+# - 'fuse': Uses os.replace() through FUSE mount (~2s per file due to overhead)
+# - 'azure_sdk': Uses Azure Data Lake SDK directly (~100ms per file, bypasses FUSE)
+RELEASE_METHOD = "azure_sdk"
+
 # What to emit
 VARIABLES = ["t2m", "u10", "v10", "sp"]
 FORECAST_HOURS = [0, 1, 2, 3, 4, 5, 6, 9, 12]  # keep small for quick smoke tests
@@ -63,6 +68,7 @@ print(f"Landing zone: {LANDING_ZONE}")
 print(f"Local staging (SSD): {LOCAL_STAGING_DIR}")
 print(f"Volume staging: {VOLUME_STAGING_DIR}")
 print(f"Mode: {MODE}")
+print(f"Release method: {RELEASE_METHOD}")
 
 # COMMAND ----------
 
@@ -82,6 +88,7 @@ from src.benchmarks.streaming_harness import (
     prepare_all_gribs_locally,
     stage_gribs_to_landing,
     release_staged_gribs,
+    AzureDataLakeRenamer,
 )
 
 # Clear local staging dir
@@ -146,16 +153,25 @@ print(f"✓ Staged {len(staged)} GRIBs in {stage_elapsed:.1f}s ({len(staged)/sta
 # MAGIC ## Phase 3: Release GRIBs at scheduled intervals
 # MAGIC
 # MAGIC Now the GRIBs are staged on the Volume. Each release does:
-# MAGIC 1. Write small manifest JSON directly to landing zone
+# MAGIC 1. Write small manifest JSON to landing zone
 # MAGIC 2. Atomic rename of GRIB from staging to landing
 # MAGIC
-# MAGIC This should be faster than before since we reduced from 4 I/O ops to 2.
+# MAGIC When using `azure_sdk` method, this bypasses FUSE for much faster releases (~100ms vs ~2s).
 
 # COMMAND ----------
 
 print(f"Releasing {len(staged)} GRIBs in {MODE} mode...")
+print(f"  Release method: {RELEASE_METHOD}")
 if MODE == "steady":
     print(f"  Expected duration: {len(staged) * STEADY_INTERVAL_S:.0f}s")
+
+# Initialize Azure SDK renamer if using that method
+renamer = None
+if RELEASE_METHOD == "azure_sdk":
+    print("  Initializing Azure Data Lake SDK renamer...")
+    volume_path = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}"
+    renamer = AzureDataLakeRenamer.from_volume_path(volume_path)
+    print(f"  ✓ Connected to storage account: {renamer.account_name}")
 
 release_start = time.time()
 
@@ -163,6 +179,8 @@ emitted = release_staged_gribs(
     staged_gribs=staged,
     mode=MODE,
     steady_interval_s=STEADY_INTERVAL_S,
+    method=RELEASE_METHOD,
+    renamer=renamer,
 )
 
 release_elapsed = time.time() - release_start
@@ -180,6 +198,7 @@ print("Producer Summary")
 print("=" * 60)
 print(f"Files emitted: {len(emitted)}")
 print(f"Mode: {MODE}")
+print(f"Release method: {RELEASE_METHOD}")
 if MODE == "steady":
     print(f"Target interval: {STEADY_INTERVAL_S}s")
     print(f"Actual rate: {len(emitted)/release_elapsed:.2f} files/sec")

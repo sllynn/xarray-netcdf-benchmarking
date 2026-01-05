@@ -44,6 +44,155 @@ import xarray as xr
 from ..zarr_init import build_hour_to_index_map, generate_forecast_steps
 
 ArrivalMode = Literal["steady", "burst"]
+ReleaseMethod = Literal["fuse", "azure_sdk"]
+
+
+class AzureDataLakeRenamer:
+    """Fast file renames using Azure Data Lake SDK, bypassing FUSE overhead.
+    
+    FUSE mounts add significant latency to file operations. For time-critical
+    renames (like releasing files at precise intervals), using the SDK directly
+    is much faster since it makes a single HTTP call instead of going through
+    the kernel filesystem layer.
+    
+    Parameters
+    ----------
+    volume_path : str
+        A Volume path like '/Volumes/catalog/schema/volume_name'.
+    
+    Examples
+    --------
+    >>> renamer = AzureDataLakeRenamer.from_volume_path('/Volumes/stuart/lseg/netcdf')
+    >>> renamer.rename(
+    ...     '/Volumes/stuart/lseg/netcdf/_staging/file.grib2',
+    ...     '/Volumes/stuart/lseg/netcdf/landing/file.grib2'
+    ... )
+    """
+    
+    def __init__(
+        self,
+        account_name: str,
+        container_name: str,
+        sas_token: str,
+        volume_base_path: str,
+    ):
+        self.account_name = account_name
+        self.container_name = container_name
+        self.sas_token = sas_token
+        self.volume_base_path = volume_base_path  # e.g., 'lseg/netcdf'
+        self._file_system_client = None
+    
+    @classmethod
+    def from_volume_path(cls, volume_path: str) -> "AzureDataLakeRenamer":
+        """Create renamer from a Volume path using TokenManager for credentials.
+        
+        Parameters
+        ----------
+        volume_path : str
+            Volume path like '/Volumes/catalog/schema/volume_name'.
+        
+        Returns
+        -------
+        AzureDataLakeRenamer
+            Configured renamer with valid SAS token.
+        """
+        from ..cloud_sync import TokenManager
+        
+        # Parse volume path to get volume name
+        parts = volume_path.strip('/').split('/')
+        if len(parts) < 4 or parts[0].lower() != 'volumes':
+            raise ValueError(f"Invalid volume path: {volume_path}")
+        
+        catalog, schema, volume = parts[1], parts[2], parts[3]
+        volume_name = f"{catalog}.{schema}.{volume}"
+        
+        # Get credentials from TokenManager
+        token_manager = TokenManager(volume_name)
+        token_manager._ensure_valid_token()
+        
+        return cls(
+            account_name=token_manager.storage_account,
+            container_name=token_manager.container,
+            sas_token=token_manager.get_sas_token(),
+            volume_base_path=token_manager.base_path,
+        )
+    
+    def _volume_path_to_blob_path(self, volume_path: str) -> str:
+        """Convert a Volume path to the blob path within the container.
+        
+        E.g., '/Volumes/stuart/lseg/netcdf/landing/file.grib2'
+           -> 'lseg/netcdf/landing/file.grib2'
+        """
+        # Strip /Volumes/catalog/schema/volume_name/ prefix
+        parts = volume_path.strip('/').split('/')
+        if len(parts) < 4:
+            raise ValueError(f"Invalid volume path: {volume_path}")
+        
+        # The subpath after the volume name
+        subpath = '/'.join(parts[4:]) if len(parts) > 4 else ''
+        
+        # Combine with the volume's base path in blob storage
+        if subpath:
+            return f"{self.volume_base_path}/{subpath}"
+        return self.volume_base_path
+    
+    def rename(self, source_path: str, dest_path: str) -> None:
+        """Rename a file using Azure Data Lake SDK (fast, bypasses FUSE).
+        
+        Parameters
+        ----------
+        source_path : str
+            Source Volume path.
+        dest_path : str
+            Destination Volume path.
+        """
+        from azure.storage.filedatalake import DataLakeFileClient
+        
+        # Convert Volume paths to blob paths
+        source_blob = self._volume_path_to_blob_path(source_path)
+        dest_blob = self._volume_path_to_blob_path(dest_path)
+        
+        # Construct the full URL with SAS for the source file
+        source_url = (
+            f"https://{self.account_name}.dfs.core.windows.net/"
+            f"{self.container_name}/{source_blob}?{self.sas_token}"
+        )
+        
+        # Create client and rename
+        file_client = DataLakeFileClient.from_file_url(source_url)
+        
+        # new_name must include container name
+        new_name = f"{self.container_name}/{dest_blob}"
+        file_client.rename_file(new_name=new_name)
+    
+    def write_and_rename(
+        self,
+        content: str,
+        dest_path: str,
+    ) -> None:
+        """Write content directly to a destination path (for manifests).
+        
+        Parameters
+        ----------
+        content : str
+            Text content to write.
+        dest_path : str
+            Destination Volume path.
+        """
+        from azure.storage.filedatalake import DataLakeFileClient
+        
+        dest_blob = self._volume_path_to_blob_path(dest_path)
+        
+        # Construct URL for destination
+        dest_url = (
+            f"https://{self.account_name}.dfs.core.windows.net/"
+            f"{self.container_name}/{dest_blob}?{self.sas_token}"
+        )
+        
+        file_client = DataLakeFileClient.from_file_url(dest_url)
+        file_client.create_file()
+        file_client.append_data(content.encode('utf-8'), offset=0, length=len(content.encode('utf-8')))
+        file_client.flush_data(len(content.encode('utf-8')))
 
 
 def utc_now_iso() -> str:
@@ -281,10 +430,10 @@ def release_staged_gribs(
     staged_gribs: list[_StagedGrib],
     mode: ArrivalMode,
     steady_interval_s: float = 1.0,
+    method: ReleaseMethod = "fuse",
+    renamer: Optional[AzureDataLakeRenamer] = None,
 ) -> list[EmittedFile]:
-    """Phase 3: Release pre-staged GRIBs at scheduled intervals (fast renames only).
-    
-    Since files are already on the Volume, this is just atomic renames.
+    """Phase 3: Release pre-staged GRIBs at scheduled intervals.
     
     Parameters
     ----------
@@ -294,17 +443,25 @@ def release_staged_gribs(
         'steady' for timed releases, 'burst' for immediate.
     steady_interval_s:
         Interval between releases in steady mode.
+    method:
+        'fuse' for os.replace() through FUSE mount (slower).
+        'azure_sdk' for direct Azure Data Lake SDK calls (faster).
+    renamer:
+        Required if method='azure_sdk'. Use AzureDataLakeRenamer.from_volume_path().
     
     Returns
     -------
     list of EmittedFile records
     """
+    if method == "azure_sdk" and renamer is None:
+        raise ValueError("renamer is required when method='azure_sdk'")
+    
     emitted: list[EmittedFile] = []
     
     if mode == "burst":
         for sg in staged_gribs:
             release_utc = utc_now_iso()
-            rec = _release_staged_grib(sg, release_utc)
+            rec = _release_staged_grib(sg, release_utc, method=method, renamer=renamer)
             emitted.append(rec)
         return emitted
     
@@ -318,20 +475,32 @@ def release_staged_gribs(
         if sleep_s > 0:
             time.sleep(sleep_s)
         
-        # Fast atomic rename
+        # Release using chosen method
         release_utc = utc_now_iso()
-        rec = _release_staged_grib(sg, release_utc)
+        rec = _release_staged_grib(sg, release_utc, method=method, renamer=renamer)
         emitted.append(rec)
     
     return emitted
 
 
-def _release_staged_grib(staged: _StagedGrib, producer_release_utc: str) -> EmittedFile:
-    """Release a staged GRIB via atomic rename (fast).
+def _release_staged_grib(
+    staged: _StagedGrib,
+    producer_release_utc: str,
+    method: ReleaseMethod = "fuse",
+    renamer: Optional[AzureDataLakeRenamer] = None,
+) -> EmittedFile:
+    """Release a staged GRIB via atomic rename.
     
-    Optimized for minimal I/O:
-    1. Write manifest directly to landing (one write)
-    2. Rename GRIB from staging to landing (one rename)
+    Parameters
+    ----------
+    staged:
+        Staged GRIB info.
+    producer_release_utc:
+        Release timestamp.
+    method:
+        'fuse' for os.replace() (slower), 'azure_sdk' for direct SDK (faster).
+    renamer:
+        Required if method='azure_sdk'.
     """
     # Build final filename with release timestamp
     final_name = build_emitted_filename(
@@ -343,8 +512,7 @@ def _release_staged_grib(staged: _StagedGrib, producer_release_utc: str) -> Emit
     final_path = staged.landing_dir / final_name
     final_manifest = final_path.with_suffix(final_path.suffix + ".json")
     
-    # Write manifest directly to landing zone (skip staging for manifest)
-    # This is a small JSON file, so direct write is acceptable
+    # Build manifest content
     manifest_content = json.dumps({
         "file_id": staged.file_id,
         "variable": staged.variable,
@@ -353,10 +521,17 @@ def _release_staged_grib(staged: _StagedGrib, producer_release_utc: str) -> Emit
         "producer_write_start_utc": staged.producer_write_start_utc,
         "producer_release_utc": producer_release_utc,
     }, indent=2) + "\n"
-    final_manifest.write_text(manifest_content)
     
-    # Atomic release: rename GRIB from staging -> landing
-    os.replace(staged.staged_path, final_path)
+    if method == "azure_sdk" and renamer is not None:
+        # Fast path: use Azure Data Lake SDK directly (bypasses FUSE)
+        # Write manifest via SDK
+        renamer.write_and_rename(manifest_content, str(final_manifest))
+        # Rename GRIB via SDK
+        renamer.rename(str(staged.staged_path), str(final_path))
+    else:
+        # Fallback: use FUSE mount (slower)
+        final_manifest.write_text(manifest_content)
+        os.replace(staged.staged_path, final_path)
     
     return EmittedFile(
         file_id=staged.file_id,
