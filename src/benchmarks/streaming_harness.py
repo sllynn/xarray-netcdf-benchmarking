@@ -118,6 +118,241 @@ class _PreparedGrib:
     producer_write_start_utc: str
 
 
+@dataclass
+class _StagedGrib:
+    """A GRIB that's been synced to landing_zone/_tmp, ready for fast release."""
+    file_id: str
+    variable: str
+    forecast_hour: int
+    staged_path: Path      # Path in landing_zone/_tmp/
+    landing_dir: Path      # Parent landing directory
+    producer_write_start_utc: str
+
+
+def _prepare_grib_locally(
+    *,
+    local_staging_dir: str,
+    variable: str,
+    forecast_hour: int,
+    reference_time_iso: Optional[str] = None,
+) -> tuple[str, str, int, Path, str]:
+    """Generate a GRIB to local disk (fast). Returns metadata for later staging.
+    
+    Returns
+    -------
+    tuple of (file_id, variable, forecast_hour, local_path, producer_write_start_utc)
+    """
+    from generate_mock_data import generate_mock_file
+
+    local_dir = Path(local_staging_dir)
+    local_dir.mkdir(parents=True, exist_ok=True)
+
+    file_id = uuid.uuid4().hex
+    producer_write_start = utc_now_iso()
+
+    reference_time = None
+    if reference_time_iso is not None:
+        reference_time = datetime.fromisoformat(reference_time_iso.replace("Z", "+00:00"))
+
+    generated_path = generate_mock_file(
+        output_dir=local_dir,
+        variable=variable,
+        forecast_hour=forecast_hour,
+        reference_time=reference_time or datetime.now(timezone.utc),
+        output_format="grib",
+    )
+
+    # Rename to include file_id for tracking
+    final_local_path = local_dir / f"{file_id}.grib2"
+    os.replace(generated_path, final_local_path)
+
+    return (file_id, variable, forecast_hour, final_local_path, producer_write_start)
+
+
+def prepare_all_gribs_locally(
+    *,
+    local_staging_dir: str,
+    plan: Iterable[tuple[str, int]],
+    workers: int = 4,
+    reference_time_iso: Optional[str] = None,
+) -> list[tuple[str, str, int, Path, str]]:
+    """Phase 1: Generate all GRIBs to local disk in parallel.
+    
+    This is fast because it writes to local SSD, not a Volume.
+    
+    Parameters
+    ----------
+    local_staging_dir:
+        Local directory for staging (e.g., '/local_disk0/grib_staging').
+    plan:
+        Iterable of (variable, forecast_hour) tuples.
+    workers:
+        Number of parallel workers for GRIB generation.
+    reference_time_iso:
+        Optional reference time for GRIB metadata.
+    
+    Returns
+    -------
+    list of (file_id, variable, forecast_hour, local_path, producer_write_start_utc) tuples
+    """
+    plan_list = list(plan)
+    
+    def _gen(args: tuple[str, int]) -> tuple[str, str, int, Path, str]:
+        var, fh = args
+        return _prepare_grib_locally(
+            local_staging_dir=local_staging_dir,
+            variable=var,
+            forecast_hour=fh,
+            reference_time_iso=reference_time_iso,
+        )
+    
+    results = []
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        futures = [ex.submit(_gen, args) for args in plan_list]
+        for fut in futures:
+            results.append(fut.result())
+    
+    return results
+
+
+def stage_gribs_to_landing(
+    *,
+    local_staging_dir: str,
+    landing_dir: str,
+    prepared: list[tuple[str, str, int, Path, str]],
+) -> list[_StagedGrib]:
+    """Phase 2: Copy all prepared GRIBs from local disk to landing_zone/_tmp.
+    
+    This can be slow (Volume I/O) but happens once before the timed test.
+    
+    Parameters
+    ----------
+    local_staging_dir:
+        Local directory containing prepared GRIBs.
+    landing_dir:
+        Landing zone directory (Volume path).
+    prepared:
+        Output from prepare_all_gribs_locally().
+    
+    Returns
+    -------
+    list of _StagedGrib ready for fast release
+    """
+    import shutil
+    
+    landing_path = Path(landing_dir)
+    tmp_dir = landing_path / "_tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    
+    staged = []
+    for file_id, variable, forecast_hour, local_path, producer_write_start in prepared:
+        # Copy to landing_zone/_tmp/
+        staged_path = tmp_dir / f"{file_id}.grib2"
+        shutil.copy2(local_path, staged_path)
+        
+        staged.append(_StagedGrib(
+            file_id=file_id,
+            variable=variable,
+            forecast_hour=forecast_hour,
+            staged_path=staged_path,
+            landing_dir=landing_path,
+            producer_write_start_utc=producer_write_start,
+        ))
+    
+    return staged
+
+
+def release_staged_gribs(
+    *,
+    staged_gribs: list[_StagedGrib],
+    mode: ArrivalMode,
+    steady_interval_s: float = 1.0,
+) -> list[EmittedFile]:
+    """Phase 3: Release pre-staged GRIBs at scheduled intervals (fast renames only).
+    
+    Since files are already on the Volume, this is just atomic renames.
+    
+    Parameters
+    ----------
+    staged_gribs:
+        Output from stage_gribs_to_landing().
+    mode:
+        'steady' for timed releases, 'burst' for immediate.
+    steady_interval_s:
+        Interval between releases in steady mode.
+    
+    Returns
+    -------
+    list of EmittedFile records
+    """
+    emitted: list[EmittedFile] = []
+    
+    if mode == "burst":
+        for sg in staged_gribs:
+            release_utc = utc_now_iso()
+            rec = _release_staged_grib(sg, release_utc)
+            emitted.append(rec)
+        return emitted
+    
+    # Steady mode: release at fixed cadence
+    start = time.perf_counter()
+    
+    for i, sg in enumerate(staged_gribs):
+        # Wait until target release time
+        target_t = start + i * steady_interval_s
+        sleep_s = target_t - time.perf_counter()
+        if sleep_s > 0:
+            time.sleep(sleep_s)
+        
+        # Fast atomic rename
+        release_utc = utc_now_iso()
+        rec = _release_staged_grib(sg, release_utc)
+        emitted.append(rec)
+    
+    return emitted
+
+
+def _release_staged_grib(staged: _StagedGrib, producer_release_utc: str) -> EmittedFile:
+    """Release a staged GRIB via atomic rename (fast)."""
+    # Build final filename with release timestamp
+    final_name = build_emitted_filename(
+        staged.variable,
+        staged.forecast_hour,
+        staged.file_id,
+        producer_release_utc,
+    )
+    final_path = staged.landing_dir / final_name
+    final_manifest = final_path.with_suffix(final_path.suffix + ".json")
+    
+    # Write manifest (small JSON file)
+    staged_manifest = staged.staged_path.with_suffix(".json")
+    write_manifest_json(
+        staged_manifest,
+        {
+            "file_id": staged.file_id,
+            "variable": staged.variable,
+            "forecast_hour": staged.forecast_hour,
+            "landing_path": str(final_path),
+            "producer_write_start_utc": staged.producer_write_start_utc,
+            "producer_release_utc": producer_release_utc,
+        },
+    )
+    
+    # Atomic release: rename staged -> final (fast, same filesystem)
+    os.replace(staged.staged_path, final_path)
+    os.replace(staged_manifest, final_manifest)
+    
+    return EmittedFile(
+        file_id=staged.file_id,
+        variable=staged.variable,
+        forecast_hour=staged.forecast_hour,
+        landing_path=str(final_path),
+        manifest_path=str(final_manifest),
+        producer_write_start_utc=staged.producer_write_start_utc,
+        producer_release_utc=producer_release_utc,
+    )
+
+
 def _prepare_grib(
     *,
     landing_dir: str,

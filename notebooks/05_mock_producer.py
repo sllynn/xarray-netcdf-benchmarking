@@ -38,6 +38,9 @@ VOLUME_NAME = "netcdf"
 
 LANDING_ZONE = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/landing/"
 
+# Local staging directory (fast SSD, not a Volume)
+LOCAL_STAGING_DIR = "/local_disk0/grib_staging"
+
 # Arrival config
 MODE = "steady"  # 'steady' or 'burst'
 STEADY_INTERVAL_S = 1.0
@@ -49,41 +52,125 @@ FORECAST_HOURS = [0, 1, 2, 3, 4, 5, 6, 9, 12]  # keep small for quick smoke test
 # Burst config
 BURST_COUNT = 200
 
+# Generation parallelism
+NUM_WORKERS = 8
+
 print(f"Landing zone: {LANDING_ZONE}")
+print(f"Local staging: {LOCAL_STAGING_DIR}")
 print(f"Mode: {MODE}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Emit files
+# MAGIC ## Phase 1: Generate GRIBs to local disk (fast, parallel)
+# MAGIC
+# MAGIC This writes to local SSD, not the Volume, so it's fast.
 
 # COMMAND ----------
 
 import itertools
+import shutil
+import time
 from pathlib import Path
 
-from src.benchmarks.streaming_harness import emit_schedule
+from src.benchmarks.streaming_harness import (
+    prepare_all_gribs_locally,
+    stage_gribs_to_landing,
+    release_staged_gribs,
+)
 
-Path(LANDING_ZONE).mkdir(parents=True, exist_ok=True)
+# Clear local staging dir
+if Path(LOCAL_STAGING_DIR).exists():
+    shutil.rmtree(LOCAL_STAGING_DIR)
+Path(LOCAL_STAGING_DIR).mkdir(parents=True, exist_ok=True)
 
+# Build the plan
 if MODE == "burst":
-    # Repeat a simple plan to reach BURST_COUNT
     base_plan = list(itertools.product(VARIABLES, FORECAST_HOURS))
     plan = (base_plan * ((BURST_COUNT // len(base_plan)) + 1))[:BURST_COUNT]
 else:
     plan = list(itertools.product(VARIABLES, FORECAST_HOURS))
 
-print(f"Emitting {len(plan)} files...")
+print(f"Generating {len(plan)} GRIBs to local disk...")
+gen_start = time.time()
 
-emitted = emit_schedule(
-    landing_dir=LANDING_ZONE,
+prepared = prepare_all_gribs_locally(
+    local_staging_dir=LOCAL_STAGING_DIR,
     plan=plan,
-    mode=MODE,
-    steady_interval_s=STEADY_INTERVAL_S,
-    workers=4,
+    workers=NUM_WORKERS,
 )
 
-print(f"✓ Emitted {len(emitted)} files")
-print("Sample:")
+gen_elapsed = time.time() - gen_start
+print(f"✓ Generated {len(prepared)} GRIBs in {gen_elapsed:.1f}s ({len(prepared)/gen_elapsed:.1f} files/sec)")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Phase 2: Copy GRIBs to landing zone staging (slow, one-time)
+# MAGIC
+# MAGIC This copies files to `landing_zone/_tmp/`. It's slow but only happens once.
+
+# COMMAND ----------
+
+Path(LANDING_ZONE).mkdir(parents=True, exist_ok=True)
+
+print(f"Staging {len(prepared)} GRIBs to {LANDING_ZONE}_tmp/...")
+stage_start = time.time()
+
+staged = stage_gribs_to_landing(
+    local_staging_dir=LOCAL_STAGING_DIR,
+    landing_dir=LANDING_ZONE,
+    prepared=prepared,
+)
+
+stage_elapsed = time.time() - stage_start
+print(f"✓ Staged {len(staged)} GRIBs in {stage_elapsed:.1f}s ({len(staged)/stage_elapsed:.1f} files/sec)")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Phase 3: Release GRIBs at scheduled intervals (fast renames)
+# MAGIC
+# MAGIC Now the GRIBs are already on the Volume. Releasing is just atomic renames, which
+# MAGIC should achieve the target 1 file/second cadence.
+
+# COMMAND ----------
+
+print(f"Releasing {len(staged)} GRIBs in {MODE} mode...")
+if MODE == "steady":
+    print(f"  Expected duration: {len(staged) * STEADY_INTERVAL_S:.0f}s")
+
+release_start = time.time()
+
+emitted = release_staged_gribs(
+    staged_gribs=staged,
+    mode=MODE,
+    steady_interval_s=STEADY_INTERVAL_S,
+)
+
+release_elapsed = time.time() - release_start
+print(f"✓ Released {len(emitted)} files in {release_elapsed:.1f}s ({len(emitted)/release_elapsed:.1f} files/sec)")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Summary
+
+# COMMAND ----------
+
+print("=" * 60)
+print("Producer Summary")
+print("=" * 60)
+print(f"Files emitted: {len(emitted)}")
+print(f"Mode: {MODE}")
+if MODE == "steady":
+    print(f"Target interval: {STEADY_INTERVAL_S}s")
+    print(f"Actual rate: {len(emitted)/release_elapsed:.2f} files/sec")
+print()
+print(f"Phase 1 (local generation): {gen_elapsed:.1f}s")
+print(f"Phase 2 (staging to Volume): {stage_elapsed:.1f}s")
+print(f"Phase 3 (timed release): {release_elapsed:.1f}s")
+print()
+print("Sample files:")
 for e in emitted[:3]:
     print(f"  {e.landing_path}")
