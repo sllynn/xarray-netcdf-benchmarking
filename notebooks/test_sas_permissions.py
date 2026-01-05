@@ -288,6 +288,113 @@ if content:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Step 8: Benchmark copy+delete with GRIB-sized file
+
+# COMMAND ----------
+
+import time
+
+# Create a ~38MB test file (similar to GRIB size)
+GRIB_SIZE_MB = 38
+large_source = f"{TEST_DIR}/large_source.bin"
+large_dest = f"{TEST_DIR}/large_dest.bin"
+
+print(f"Creating {GRIB_SIZE_MB}MB test file...")
+with open(large_source, 'wb') as f:
+    # Write in chunks to avoid memory issues
+    chunk = b'x' * (1024 * 1024)  # 1MB chunk
+    for _ in range(GRIB_SIZE_MB):
+        f.write(chunk)
+print(f"✓ Created {GRIB_SIZE_MB}MB file")
+
+# COMMAND ----------
+
+# Benchmark: Copy + Delete via Azure SDK
+large_source_path = f"{base_path}/_sas_test/large_source.bin"
+large_dest_path = f"{base_path}/_sas_test/large_dest.bin"
+
+source_client = fs_client.get_file_client(large_source_path)
+dest_client = fs_client.get_file_client(large_dest_path)
+
+print(f"\nBenchmarking copy+delete for {GRIB_SIZE_MB}MB file via Azure SDK...")
+print("=" * 50)
+
+# Time the full operation
+total_start = time.perf_counter()
+
+# Step 1: Read
+read_start = time.perf_counter()
+download = source_client.download_file()
+content = download.readall()
+read_time = time.perf_counter() - read_start
+print(f"  Read:   {read_time:.3f}s ({len(content)/1024/1024:.1f}MB)")
+
+# Step 2: Write
+write_start = time.perf_counter()
+dest_client.create_file()
+# Write in chunks for large files
+chunk_size = 4 * 1024 * 1024  # 4MB chunks
+offset = 0
+while offset < len(content):
+    chunk = content[offset:offset + chunk_size]
+    dest_client.append_data(chunk, offset)
+    offset += len(chunk)
+dest_client.flush_data(len(content))
+write_time = time.perf_counter() - write_start
+print(f"  Write:  {write_time:.3f}s")
+
+# Step 3: Delete source
+delete_start = time.perf_counter()
+source_client.delete_file()
+delete_time = time.perf_counter() - delete_start
+print(f"  Delete: {delete_time:.3f}s")
+
+total_time = time.perf_counter() - total_start
+print(f"  ─────────────────")
+print(f"  TOTAL:  {total_time:.3f}s")
+print()
+print(f"Throughput: {GRIB_SIZE_MB/total_time:.1f} MB/s")
+
+# COMMAND ----------
+
+# Compare with FUSE rename
+print("\nBenchmarking os.replace() via FUSE mount...")
+print("=" * 50)
+
+# Recreate source file
+with open(large_source, 'wb') as f:
+    chunk = b'x' * (1024 * 1024)
+    for _ in range(GRIB_SIZE_MB):
+        f.write(chunk)
+
+fuse_start = time.perf_counter()
+os.replace(large_source, large_dest)
+fuse_time = time.perf_counter() - fuse_start
+print(f"  FUSE rename: {fuse_time:.3f}s")
+
+# COMMAND ----------
+
+# Summary comparison
+print("\n" + "=" * 50)
+print("COMPARISON SUMMARY")
+print("=" * 50)
+print(f"  Azure SDK copy+delete: {total_time:.3f}s")
+print(f"  FUSE os.replace():     {fuse_time:.3f}s")
+print()
+if total_time < fuse_time:
+    speedup = fuse_time / total_time
+    print(f"  → Azure SDK is {speedup:.1f}x FASTER")
+else:
+    slowdown = total_time / fuse_time
+    print(f"  → Azure SDK is {slowdown:.1f}x SLOWER")
+print()
+print(f"At 1 file/second rate:")
+print(f"  Azure SDK: {'✓ feasible' if total_time < 1.0 else '✗ too slow'} ({total_time:.2f}s per file)")
+print(f"  FUSE:      {'✓ feasible' if fuse_time < 1.0 else '✗ too slow'} ({fuse_time:.2f}s per file)")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Cleanup
 
 # COMMAND ----------
