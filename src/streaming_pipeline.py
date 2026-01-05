@@ -197,7 +197,16 @@ def create_streaming_pipeline(
         
         # Collect file paths to driver
         # AutoLoader provides 'path' column with binary file format
-        all_paths = [row.path.replace("dbfs:", "") for row in batch_df.select('path').collect()]
+        rows = batch_df.collect()
+        
+        # Debug: log what columns and data we received
+        if rows:
+            logger.info(f"Batch {batch_id}: Received {len(rows)} rows, columns: {batch_df.columns}")
+            # Log first few paths for debugging
+            sample_paths = [str(row.asDict()) for row in rows[:3]]
+            logger.info(f"Batch {batch_id}: Sample rows: {sample_paths}")
+        
+        all_paths = [row.path.replace("dbfs:", "") for row in rows]
         
         # Filter to only actual GRIB files (safety net in case glob filter misses some)
         GRIB_EXTENSIONS = {'.grib', '.grib2', '.grb', '.grb2'}
@@ -208,7 +217,7 @@ def create_streaming_pipeline(
         
         skipped = len(all_paths) - len(file_paths)
         if skipped > 0:
-            logger.warning(f"Batch {batch_id}: Skipped {skipped} non-GRIB files")
+            logger.warning(f"Batch {batch_id}: Skipped {skipped} non-GRIB files: {all_paths[:5]}")
         
         if not file_paths:
             logger.info(f"Batch {batch_id}: No GRIB files to process")
