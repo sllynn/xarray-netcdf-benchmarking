@@ -128,10 +128,6 @@ from src.zarr_init import initialize_zarr_store, generate_forecast_steps
 
 # COMMAND ----------
 
-dbutils.fs.rm(LOCAL_ZARR_PATH, recurse=True)
-
-# COMMAND ----------
-
 dbutils.fs.rm(f"file:{LOCAL_ZARR_PATH}", recurse=True)
 
 # COMMAND ----------
@@ -175,10 +171,15 @@ import shutil
 try:
     dbutils.fs.rm(CHECKPOINT_PATH, recurse=True)
     dbutils.fs.rm(LANDING_ZONE, recurse=True)
+    dbutils.fs.rm(CLOUD_DESTINATION, recurse=True)
     print(f"✓ Cleared checkpoint: {CHECKPOINT_PATH}")
 except Exception as e:
     # Checkpoint may not exist yet on first run
     print(f"Note: Could not clear checkpoint (may not exist yet): {e}")
+
+# COMMAND ----------
+
+dbutils.fs.cp(f"file:{LOCAL_ZARR_PATH}", f"dbfs:{CLOUD_DESTINATION}", recurse=True)
 
 # COMMAND ----------
 
