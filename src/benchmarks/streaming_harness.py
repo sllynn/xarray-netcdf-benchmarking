@@ -136,6 +136,19 @@ class AzureDataLakeRenamer:
             return f"{self.volume_base_path}/{subpath}"
         return self.volume_base_path
     
+    def _get_file_client(self, blob_path: str):
+        """Get a DataLakeFileClient for the given blob path."""
+        from azure.storage.filedatalake import DataLakeServiceClient
+        from azure.core.credentials import AzureSasCredential
+        
+        # Create service client with SAS credential
+        account_url = f"https://{self.account_name}.dfs.core.windows.net"
+        credential = AzureSasCredential(self.sas_token)
+        
+        service_client = DataLakeServiceClient(account_url, credential=credential)
+        file_system_client = service_client.get_file_system_client(self.container_name)
+        return file_system_client.get_file_client(blob_path)
+    
     def rename(self, source_path: str, dest_path: str) -> None:
         """Rename a file using Azure Data Lake SDK (fast, bypasses FUSE).
         
@@ -146,20 +159,12 @@ class AzureDataLakeRenamer:
         dest_path : str
             Destination Volume path.
         """
-        from azure.storage.filedatalake import DataLakeFileClient
-        
         # Convert Volume paths to blob paths
         source_blob = self._volume_path_to_blob_path(source_path)
         dest_blob = self._volume_path_to_blob_path(dest_path)
         
-        # Construct the full URL with SAS for the source file
-        source_url = (
-            f"https://{self.account_name}.dfs.core.windows.net/"
-            f"{self.container_name}/{source_blob}?{self.sas_token}"
-        )
-        
-        # Create client and rename
-        file_client = DataLakeFileClient.from_file_url(source_url)
+        # Get client for source file
+        file_client = self._get_file_client(source_blob)
         
         # new_name must include container name
         new_name = f"{self.container_name}/{dest_blob}"
@@ -179,20 +184,16 @@ class AzureDataLakeRenamer:
         dest_path : str
             Destination Volume path.
         """
-        from azure.storage.filedatalake import DataLakeFileClient
-        
         dest_blob = self._volume_path_to_blob_path(dest_path)
         
-        # Construct URL for destination
-        dest_url = (
-            f"https://{self.account_name}.dfs.core.windows.net/"
-            f"{self.container_name}/{dest_blob}?{self.sas_token}"
-        )
+        # Get client for destination file
+        file_client = self._get_file_client(dest_blob)
         
-        file_client = DataLakeFileClient.from_file_url(dest_url)
+        # Create file and write content
         file_client.create_file()
-        file_client.append_data(content.encode('utf-8'), offset=0, length=len(content.encode('utf-8')))
-        file_client.flush_data(len(content.encode('utf-8')))
+        data = content.encode('utf-8')
+        file_client.append_data(data, offset=0, length=len(data))
+        file_client.flush_data(len(data))
 
 
 def utc_now_iso() -> str:
