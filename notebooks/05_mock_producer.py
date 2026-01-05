@@ -41,6 +41,10 @@ LANDING_ZONE = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/landing/"
 # Local staging directory (fast SSD, not a Volume)
 LOCAL_STAGING_DIR = "/local_disk0/grib_staging"
 
+# Volume staging directory - OUTSIDE landing zone to avoid AutoLoader picking up files early
+# This is a sibling directory to landing, not a child
+VOLUME_STAGING_DIR = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/_grib_staging/"
+
 # Arrival config
 MODE = "steady"  # 'steady' or 'burst'
 STEADY_INTERVAL_S = 1.0
@@ -56,7 +60,8 @@ BURST_COUNT = 200
 NUM_WORKERS = 8
 
 print(f"Landing zone: {LANDING_ZONE}")
-print(f"Local staging: {LOCAL_STAGING_DIR}")
+print(f"Local staging (SSD): {LOCAL_STAGING_DIR}")
+print(f"Volume staging: {VOLUME_STAGING_DIR}")
 print(f"Mode: {MODE}")
 
 # COMMAND ----------
@@ -106,21 +111,30 @@ print(f"✓ Generated {len(prepared)} GRIBs in {gen_elapsed:.1f}s ({len(prepared
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Phase 2: Copy GRIBs to landing zone staging (slow, one-time)
+# MAGIC ## Phase 2: Copy GRIBs to Volume staging (slow, one-time)
 # MAGIC
-# MAGIC This copies files to `landing_zone/_tmp/`. It's slow but only happens once.
+# MAGIC This copies files to a staging directory **outside** the landing zone.
+# MAGIC This prevents AutoLoader from picking up files prematurely.
+# MAGIC
+# MAGIC Staging location: `_grib_staging/` (sibling of landing, not child)
 
 # COMMAND ----------
 
 Path(LANDING_ZONE).mkdir(parents=True, exist_ok=True)
 
-print(f"Staging {len(prepared)} GRIBs to {LANDING_ZONE}_tmp/...")
+# Clear volume staging directory from previous runs
+if Path(VOLUME_STAGING_DIR).exists():
+    shutil.rmtree(VOLUME_STAGING_DIR)
+
+print(f"Staging {len(prepared)} GRIBs to {VOLUME_STAGING_DIR}...")
+print(f"  (Outside landing zone to avoid AutoLoader)")
 stage_start = time.time()
 
 staged = stage_gribs_to_landing(
     local_staging_dir=LOCAL_STAGING_DIR,
     landing_dir=LANDING_ZONE,
     prepared=prepared,
+    volume_staging_dir=VOLUME_STAGING_DIR,
 )
 
 stage_elapsed = time.time() - stage_start
@@ -129,10 +143,13 @@ print(f"✓ Staged {len(staged)} GRIBs in {stage_elapsed:.1f}s ({len(staged)/sta
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Phase 3: Release GRIBs at scheduled intervals (fast renames)
+# MAGIC ## Phase 3: Release GRIBs at scheduled intervals
 # MAGIC
-# MAGIC Now the GRIBs are already on the Volume. Releasing is just atomic renames, which
-# MAGIC should achieve the target 1 file/second cadence.
+# MAGIC Now the GRIBs are staged on the Volume. Each release does:
+# MAGIC 1. Write small manifest JSON directly to landing zone
+# MAGIC 2. Atomic rename of GRIB from staging to landing
+# MAGIC
+# MAGIC This should be faster than before since we reduced from 4 I/O ops to 2.
 
 # COMMAND ----------
 

@@ -220,10 +220,15 @@ def stage_gribs_to_landing(
     local_staging_dir: str,
     landing_dir: str,
     prepared: list[tuple[str, str, int, Path, str]],
+    volume_staging_dir: Optional[str] = None,
 ) -> list[_StagedGrib]:
-    """Phase 2: Copy all prepared GRIBs from local disk to landing_zone/_tmp.
+    """Phase 2: Copy all prepared GRIBs from local disk to Volume staging directory.
     
     This can be slow (Volume I/O) but happens once before the timed test.
+    
+    IMPORTANT: The staging directory should be OUTSIDE the landing zone to avoid
+    AutoLoader picking up files prematurely. By default, uses a sibling directory
+    at the same level as the landing zone.
     
     Parameters
     ----------
@@ -233,6 +238,9 @@ def stage_gribs_to_landing(
         Landing zone directory (Volume path).
     prepared:
         Output from prepare_all_gribs_locally().
+    volume_staging_dir:
+        Optional explicit staging directory on the Volume. If None, uses
+        a sibling directory `_grib_staging/` next to the landing zone.
     
     Returns
     -------
@@ -241,13 +249,19 @@ def stage_gribs_to_landing(
     import shutil
     
     landing_path = Path(landing_dir)
-    tmp_dir = landing_path / "_tmp"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Stage to a sibling directory OUTSIDE landing zone to avoid AutoLoader
+    if volume_staging_dir:
+        staging_dir = Path(volume_staging_dir)
+    else:
+        staging_dir = landing_path.parent / "_grib_staging"
+    
+    staging_dir.mkdir(parents=True, exist_ok=True)
     
     staged = []
     for file_id, variable, forecast_hour, local_path, producer_write_start in prepared:
-        # Copy to landing_zone/_tmp/
-        staged_path = tmp_dir / f"{file_id}.grib2"
+        # Copy to staging directory (outside landing zone)
+        staged_path = staging_dir / f"{file_id}.grib2"
         shutil.copy2(local_path, staged_path)
         
         staged.append(_StagedGrib(
@@ -313,7 +327,12 @@ def release_staged_gribs(
 
 
 def _release_staged_grib(staged: _StagedGrib, producer_release_utc: str) -> EmittedFile:
-    """Release a staged GRIB via atomic rename (fast)."""
+    """Release a staged GRIB via atomic rename (fast).
+    
+    Optimized for minimal I/O:
+    1. Write manifest directly to landing (one write)
+    2. Rename GRIB from staging to landing (one rename)
+    """
     # Build final filename with release timestamp
     final_name = build_emitted_filename(
         staged.variable,
@@ -324,23 +343,20 @@ def _release_staged_grib(staged: _StagedGrib, producer_release_utc: str) -> Emit
     final_path = staged.landing_dir / final_name
     final_manifest = final_path.with_suffix(final_path.suffix + ".json")
     
-    # Write manifest (small JSON file)
-    staged_manifest = staged.staged_path.with_suffix(".json")
-    write_manifest_json(
-        staged_manifest,
-        {
-            "file_id": staged.file_id,
-            "variable": staged.variable,
-            "forecast_hour": staged.forecast_hour,
-            "landing_path": str(final_path),
-            "producer_write_start_utc": staged.producer_write_start_utc,
-            "producer_release_utc": producer_release_utc,
-        },
-    )
+    # Write manifest directly to landing zone (skip staging for manifest)
+    # This is a small JSON file, so direct write is acceptable
+    manifest_content = json.dumps({
+        "file_id": staged.file_id,
+        "variable": staged.variable,
+        "forecast_hour": staged.forecast_hour,
+        "landing_path": str(final_path),
+        "producer_write_start_utc": staged.producer_write_start_utc,
+        "producer_release_utc": producer_release_utc,
+    }, indent=2) + "\n"
+    final_manifest.write_text(manifest_content)
     
-    # Atomic release: rename staged -> final (fast, same filesystem)
+    # Atomic release: rename GRIB from staging -> landing
     os.replace(staged.staged_path, final_path)
-    os.replace(staged_manifest, final_manifest)
     
     return EmittedFile(
         file_id=staged.file_id,
