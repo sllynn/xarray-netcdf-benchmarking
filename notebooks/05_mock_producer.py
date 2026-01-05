@@ -41,10 +41,6 @@ LANDING_ZONE = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/landing/"
 # Local staging directory (fast SSD, not a Volume)
 LOCAL_STAGING_DIR = "/local_disk0/grib_staging"
 
-# Volume staging directory - OUTSIDE landing zone to avoid AutoLoader picking up files early
-# This is a sibling directory to landing, not a child
-VOLUME_STAGING_DIR = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/_grib_staging/"
-
 # Arrival config
 MODE = "steady"  # 'steady' or 'burst'
 STEADY_INTERVAL_S = 1.0
@@ -61,7 +57,6 @@ NUM_WORKERS = 8
 
 print(f"Landing zone: {LANDING_ZONE}")
 print(f"Local staging (SSD): {LOCAL_STAGING_DIR}")
-print(f"Volume staging: {VOLUME_STAGING_DIR}")
 print(f"Mode: {MODE}")
 
 # COMMAND ----------
@@ -111,49 +106,41 @@ print(f"✓ Generated {len(prepared)} GRIBs in {gen_elapsed:.1f}s ({len(prepared
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Phase 2: Copy GRIBs to Volume staging (slow, one-time)
+# MAGIC ## Phase 2: Copy GRIBs to landing zone (slow, one-time)
 # MAGIC
-# MAGIC This copies files to a staging directory **outside** the landing zone.
-# MAGIC This prevents AutoLoader from picking up files prematurely.
-# MAGIC
-# MAGIC Staging location: `_grib_staging/` (sibling of landing, not child)
+# MAGIC This copies GRIBs directly to the landing zone using azcopy.
+# MAGIC AutoLoader only watches for manifest files (`*.grib2.json`), so GRIBs
+# MAGIC without manifests won't trigger any processing until Phase 3.
 
 # COMMAND ----------
 
-Path(LANDING_ZONE).mkdir(parents=True, exist_ok=True)
-
-print(f"Staging {len(prepared)} GRIBs to {VOLUME_STAGING_DIR} via azcopy...")
-print(f"  (Outside landing zone to avoid AutoLoader)")
+print(f"Copying {len(prepared)} GRIBs to {LANDING_ZONE} via azcopy...")
+print(f"  (AutoLoader watches manifests, not GRIBs, so these won't trigger processing)")
 stage_start = time.time()
 
 staged = stage_gribs_to_landing(
     local_staging_dir=LOCAL_STAGING_DIR,
     landing_dir=LANDING_ZONE,
     prepared=prepared,
-    volume_staging_dir=VOLUME_STAGING_DIR,
 )
 
 stage_elapsed = time.time() - stage_start
-print(f"✓ Staged {len(staged)} GRIBs in {stage_elapsed:.1f}s ({len(staged)/stage_elapsed:.1f} files/sec)")
+print(f"✓ Copied {len(staged)} GRIBs in {stage_elapsed:.1f}s ({len(staged)/stage_elapsed:.1f} files/sec)")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Phase 3: Release GRIBs at scheduled intervals
+# MAGIC ## Phase 3: Release manifests at scheduled intervals
 # MAGIC
-# MAGIC Now the GRIBs are staged on the Volume. Each release does:
-# MAGIC 1. Write small manifest JSON to landing zone via FUSE
-# MAGIC 2. Atomic rename of GRIB from staging to landing via FUSE `os.replace()`
-# MAGIC
-# MAGIC Uses FUSE operations (not Azure SDK) so that file notifications are triggered
-# MAGIC for AutoLoader to detect new files. FUSE rename is ~0.6s per 38MB file.
+# MAGIC GRIBs are already in the landing zone (from Phase 2). Each release only writes
+# MAGIC a small manifest JSON file, which triggers file notifications for AutoLoader.
+# MAGIC This is fast (~10ms per manifest) enabling precise timing control.
 
 # COMMAND ----------
 
 print(f"Releasing {len(staged)} GRIBs in {MODE} mode...")
 if MODE == "steady":
     print(f"  Expected duration: {len(staged) * STEADY_INTERVAL_S:.0f}s")
-print("  Using FUSE for releases (triggers file notifications for AutoLoader)")
 
 release_start = time.time()
 
@@ -177,25 +164,19 @@ print(f"✓ Released {len(emitted)} files in {release_elapsed:.1f}s ({len(emitte
 
 if timings:
     manifest_times = [t.manifest_write_s for t in timings]
-    rename_times = [t.grib_rename_s for t in timings]
     total_times = [t.total_s for t in timings]
     
     print("Release Timing Breakdown:")
     print("=" * 50)
-    print(f"  Manifest write:  avg={sum(manifest_times)/len(manifest_times):.3f}s  "
-          f"min={min(manifest_times):.3f}s  max={max(manifest_times):.3f}s")
-    print(f"  GRIB rename:     avg={sum(rename_times)/len(rename_times):.3f}s  "
-          f"min={min(rename_times):.3f}s  max={max(rename_times):.3f}s")
-    print(f"  Total per file:  avg={sum(total_times)/len(total_times):.3f}s  "
-          f"min={min(total_times):.3f}s  max={max(total_times):.3f}s")
+    print(f"  Manifest write:  avg={sum(manifest_times)/len(manifest_times)*1000:.1f}ms  "
+          f"min={min(manifest_times)*1000:.1f}ms  max={max(manifest_times)*1000:.1f}ms")
+    print(f"  Total per file:  avg={sum(total_times)/len(total_times)*1000:.1f}ms  "
+          f"min={min(total_times)*1000:.1f}ms  max={max(total_times)*1000:.1f}ms")
     print()
     
     avg_total = sum(total_times) / len(total_times)
-    if avg_total < 1.0:
-        print(f"✓ Average release time ({avg_total:.3f}s) is under 1s target")
-    else:
-        print(f"✗ Average release time ({avg_total:.3f}s) exceeds 1s target")
-        print(f"  Bottleneck: {'Manifest write' if sum(manifest_times) > sum(rename_times) else 'GRIB rename'}")
+    if avg_total < 0.1:
+        print(f"✓ Average release time ({avg_total*1000:.1f}ms) well under 1s target")
 
 # COMMAND ----------
 

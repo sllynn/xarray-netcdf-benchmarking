@@ -265,11 +265,11 @@ class _PreparedGrib:
 
 @dataclass
 class _StagedGrib:
-    """A GRIB that's been synced to landing_zone/_tmp, ready for fast release."""
+    """A GRIB that's been copied to landing zone, waiting for manifest release."""
     file_id: str
     variable: str
     forecast_hour: int
-    staged_path: Path      # Path in landing_zone/_tmp/
+    grib_path: Path        # Path to GRIB already in landing zone
     landing_dir: Path      # Parent landing directory
     producer_write_start_utc: str
 
@@ -365,15 +365,14 @@ def stage_gribs_to_landing(
     local_staging_dir: str,
     landing_dir: str,
     prepared: list[tuple[str, str, int, Path, str]],
-    volume_staging_dir: Optional[str] = None,
+    volume_staging_dir: Optional[str] = None,  # Kept for API compatibility, but ignored
 ) -> list[_StagedGrib]:
-    """Phase 2: Copy all prepared GRIBs from local disk to Volume staging directory.
+    """Phase 2: Copy all prepared GRIBs directly to the landing zone.
     
-    Uses azcopy for fast bulk sync. Always clears the staging directory first.
-    
-    IMPORTANT: The staging directory should be OUTSIDE the landing zone to avoid
-    AutoLoader picking up files prematurely. By default, uses a sibling directory
-    at the same level as the landing zone.
+    Uses azcopy for fast bulk sync. GRIBs are named {file_id}.grib2 and sit
+    in the landing zone waiting for manifests. AutoLoader only watches for
+    manifest files (*.grib2.json), so GRIBs without manifests won't trigger
+    processing.
     
     Parameters
     ----------
@@ -384,46 +383,35 @@ def stage_gribs_to_landing(
     prepared:
         Output from prepare_all_gribs_locally().
     volume_staging_dir:
-        Optional explicit staging directory on the Volume. If None, uses
-        a sibling directory `_grib_staging/` next to the landing zone.
+        Ignored (kept for API compatibility).
     
     Returns
     -------
-    list of _StagedGrib ready for fast release
+    list of _StagedGrib ready for manifest release
     """
-    import shutil
     from ..cloud_sync import CloudSyncer
     
     landing_path = Path(landing_dir)
+    landing_path.mkdir(parents=True, exist_ok=True)
     
-    # Stage to a sibling directory OUTSIDE landing zone to avoid AutoLoader
-    if volume_staging_dir:
-        staging_dir = Path(volume_staging_dir)
-    else:
-        staging_dir = landing_path.parent / "_grib_staging"
-    
-    # Always clear the staging directory before sync, then recreate it
-    if staging_dir.exists():
-        shutil.rmtree(staging_dir)
-    staging_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Use azcopy to bulk sync all files at once (fast, parallel)
-    syncer = CloudSyncer.from_volume_path(str(staging_dir))
+    # Use azcopy to bulk sync all GRIBs directly to landing zone
+    # AutoLoader only watches *.grib2.json, so GRIBs without manifests won't trigger
+    syncer = CloudSyncer.from_volume_path(str(landing_path))
     result = syncer.sync(local_staging_dir)
     
     if not result.success:
-        raise RuntimeError(f"azcopy staging failed: {result.error}")
+        raise RuntimeError(f"azcopy sync to landing failed: {result.error}")
     
-    # Build the staged list based on prepared files
+    # Build the staged list - GRIBs are now in landing, waiting for manifests
     staged = []
     for file_id, variable, forecast_hour, local_path, producer_write_start in prepared:
-        staged_path = staging_dir / f"{file_id}.grib2"
+        grib_path = landing_path / f"{file_id}.grib2"
         
         staged.append(_StagedGrib(
             file_id=file_id,
             variable=variable,
             forecast_hour=forecast_hour,
-            staged_path=staged_path,
+            grib_path=grib_path,
             landing_dir=landing_path,
             producer_write_start_utc=producer_write_start,
         ))
@@ -436,7 +424,6 @@ class ReleaseTimings:
     """Timing breakdown for a single release operation."""
     file_id: str
     manifest_write_s: float
-    grib_rename_s: float
     total_s: float
 
 
@@ -467,7 +454,21 @@ def release_staged_gribs(
     Returns
     -------
     tuple of (list of EmittedFile records, list of ReleaseTimings)
+    
+    Raises
+    ------
+    FileNotFoundError
+        If staged files don't exist (re-run Phase 2 to re-stage).
     """
+    # Validate staged files exist before starting timed release
+    missing = [sg for sg in staged_gribs if not Path(sg.grib_path).exists()]
+    if missing:
+        raise FileNotFoundError(
+            f"{len(missing)} of {len(staged_gribs)} GRIB files not found in landing zone. "
+            f"First missing: {missing[0].grib_path}\n"
+            f"Re-run Phase 2 (copy to landing) before Phase 3 (manifest release)."
+        )
+    
     emitted: list[EmittedFile] = []
     timings: list[ReleaseTimings] = []
     
@@ -505,53 +506,42 @@ def _release_staged_grib(
     renamer: Optional[AzureDataLakeRenamer] = None,
     collect_timings: bool = False,
 ) -> tuple[EmittedFile, Optional[ReleaseTimings]]:
-    """Release a staged GRIB via atomic rename.
+    """Release a GRIB by writing its manifest file.
     
-    Uses Azure SDK rename if renamer is provided (faster), otherwise
-    falls back to FUSE os.replace().
+    The GRIB is already in the landing zone (from Phase 2). This function
+    only writes the manifest JSON, which triggers AutoLoader to detect
+    and process the file.
     
     Parameters
     ----------
     staged:
-        Staged GRIB info.
+        GRIB info (already in landing zone).
     producer_release_utc:
         Release timestamp.
     renamer:
-        Optional SDK renamer for fast operations.
+        Optional SDK renamer (unused, kept for API compatibility).
     collect_timings:
         If True, return timing breakdown.
     """
     total_start = time.perf_counter() if collect_timings else 0
     
-    # Build final filename with release timestamp
-    final_name = build_emitted_filename(
-        staged.variable,
-        staged.forecast_hour,
-        staged.file_id,
-        producer_release_utc,
-    )
-    final_path = staged.landing_dir / final_name
-    final_manifest = final_path.with_suffix(final_path.suffix + ".json")
+    # Build manifest filename with release timestamp
+    manifest_name = f"{staged.variable}_step{staged.forecast_hour:03d}_emit-{producer_release_utc.replace(':', '').replace('-', '')}_id-{staged.file_id}.grib2.json"
+    manifest_path = staged.landing_dir / manifest_name
     
-    # Build manifest content
+    # Build manifest content pointing to the existing GRIB
     manifest_content = json.dumps({
         "file_id": staged.file_id,
         "variable": staged.variable,
         "forecast_hour": staged.forecast_hour,
-        "landing_path": str(final_path),
+        "landing_path": str(staged.grib_path),
         "producer_write_start_utc": staged.producer_write_start_utc,
         "producer_release_utc": producer_release_utc,
     }, indent=2) + "\n"
     
-    # Atomic rename GRIB from staging to landing (fast, ~0.6s)
-    rename_start = time.perf_counter() if collect_timings else 0
-    os.replace(staged.staged_path, final_path)
-    rename_time = time.perf_counter() - rename_start if collect_timings else 0
-    
-    # Write manifest AFTER the GRIB rename completes
-    # The manifest write triggers file notifications, which AutoLoader detects
+    # Write manifest - this triggers file notifications for AutoLoader
     manifest_start = time.perf_counter() if collect_timings else 0
-    final_manifest.write_text(manifest_content)
+    manifest_path.write_text(manifest_content)
     manifest_time = time.perf_counter() - manifest_start if collect_timings else 0
     
     total_time = time.perf_counter() - total_start if collect_timings else 0
@@ -561,7 +551,6 @@ def _release_staged_grib(
         timing = ReleaseTimings(
             file_id=staged.file_id,
             manifest_write_s=manifest_time,
-            grib_rename_s=rename_time,
             total_s=total_time,
         )
     
@@ -569,8 +558,8 @@ def _release_staged_grib(
         file_id=staged.file_id,
         variable=staged.variable,
         forecast_hour=staged.forecast_hour,
-        landing_path=str(final_path),
-        manifest_path=str(final_manifest),
+        landing_path=str(staged.grib_path),
+        manifest_path=str(manifest_path),
         producer_write_start_utc=staged.producer_write_start_utc,
         producer_release_utc=producer_release_utc,
     )
