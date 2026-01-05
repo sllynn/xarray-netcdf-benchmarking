@@ -179,7 +179,44 @@ except Exception as e:
 
 # COMMAND ----------
 
-dbutils.fs.cp(f"file:{LOCAL_ZARR_PATH}", f"dbfs:{CLOUD_DESTINATION}", recurse=True)
+# MAGIC %md
+# MAGIC ## Initial Sync to Silver Zone
+# MAGIC
+# MAGIC Sync the freshly initialized Zarr store (including `.zmetadata`) to the silver zone
+# MAGIC using azcopy for speed and reliability. This ensures consumers can open the store
+# MAGIC immediately with consolidated metadata.
+
+# COMMAND ----------
+
+from src.cloud_sync import CloudSyncer
+import time
+
+print(f"Syncing initialized Zarr store to silver zone...")
+print(f"  Source: {LOCAL_ZARR_PATH}")
+print(f"  Destination: {CLOUD_DESTINATION}")
+
+sync_start = time.time()
+
+try:
+    syncer = CloudSyncer.from_volume_path(CLOUD_DESTINATION)
+    result = syncer.sync(LOCAL_ZARR_PATH)
+    
+    sync_elapsed = time.time() - sync_start
+    
+    if result.success:
+        print(f"✓ Initial sync complete in {sync_elapsed:.1f}s")
+        print(f"  Files transferred: {result.files_transferred}")
+    else:
+        print(f"✗ azcopy sync failed: {result.error}")
+        print("  Falling back to dbutils.fs.cp (slower)...")
+        dbutils.fs.cp(f"file:{LOCAL_ZARR_PATH}", f"dbfs:{CLOUD_DESTINATION}", recurse=True)
+        print(f"✓ Fallback sync complete")
+        
+except Exception as e:
+    print(f"✗ CloudSyncer failed: {e}")
+    print("  Falling back to dbutils.fs.cp (slower)...")
+    dbutils.fs.cp(f"file:{LOCAL_ZARR_PATH}", f"dbfs:{CLOUD_DESTINATION}", recurse=True)
+    print(f"✓ Fallback sync complete")
 
 # COMMAND ----------
 
