@@ -1030,25 +1030,26 @@ def follow_manifests_and_measure(
             poll_counts.setdefault(fid, {"na_poll_count": 0, "total_poll_count": 0})
 
         if pending:
-            # Open xarray dataset fresh each poll
-            try:
-                ds = xr.open_zarr(silver_zarr_path, consolidated=True)
-            except KeyError as e:
-                key_str = str(e).strip("\"'")
-                if key_str in {".zmetadata", "zarr.json"}:
-                    ds = xr.open_zarr(silver_zarr_path, consolidated=False)
-                else:
-                    raise
-
-            try:
-                for fid in pending:
-                    ef = emitted_by_id[fid]
-                    step_idx = hour_to_index.get(ef.forecast_hour)
-                    if step_idx is None:
-                        continue
-
-                    # Try to read the value, with retry for transient decompression errors
-                    # (can happen if we read a chunk while it's still being written/synced)
+            # Check visibility in parallel using thread pool
+            # Each thread opens its own zarr store to avoid contention
+            def check_single_file(fid: str) -> tuple[str, float | None, str]:
+                """Check if a single file is visible. Returns (file_id, value, timestamp)."""
+                ef = emitted_by_id[fid]
+                step_idx = hour_to_index.get(ef.forecast_hour)
+                if step_idx is None:
+                    return (fid, None, "")
+                
+                try:
+                    # Each thread opens its own store for thread safety
+                    try:
+                        ds = xr.open_zarr(silver_zarr_path, consolidated=True)
+                    except KeyError as e:
+                        key_str = str(e).strip("\"'")
+                        if key_str in {".zmetadata", "zarr.json"}:
+                            ds = xr.open_zarr(silver_zarr_path, consolidated=False)
+                        else:
+                            raise
+                    
                     try:
                         val = (
                             ds[ef.variable]
@@ -1057,38 +1058,52 @@ def follow_manifests_and_measure(
                         )
                         if isinstance(val, np.ndarray):
                             val = val.item()
-                    except RuntimeError as e:
-                        if "blosc" in str(e).lower() or "decompression" in str(e).lower():
-                            # Chunk is still being written, treat as NaN for this poll
-                            val = np.nan
-                        else:
-                            raise
+                        # Capture timestamp immediately when value is read
+                        ts = utc_now_iso()
+                        return (fid, val, ts)
+                    finally:
+                        ds.close()
+                except RuntimeError as e:
+                    if "blosc" in str(e).lower() or "decompression" in str(e).lower():
+                        return (fid, np.nan, "")
+                    raise
+                except Exception:
+                    return (fid, np.nan, "")
 
-                    poll_counts[fid]["total_poll_count"] += 1
+            # Use thread pool to check files in parallel
+            # More threads = faster polling but more FUSE connections
+            max_workers = min(16, len(pending))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                results = list(executor.map(check_single_file, pending))
 
-                    if not np.isnan(val):
-                        # Capture timestamp per-file for accurate timing
-                        now_iso = utc_now_iso()
-                        now_dt = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
-                        producer_release_dt = datetime.fromisoformat(
-                            ef.producer_release_utc.replace("Z", "+00:00")
-                        )
-                        latency_ms = (now_dt - producer_release_dt).total_seconds() * 1000
-                        events_by_id[fid] = VisibilityEvent(
-                            file_id=fid,
-                            variable=ef.variable,
-                            forecast_hour=ef.forecast_hour,
-                            step_index=step_idx,
-                            producer_release_utc=ef.producer_release_utc,
-                            consumer_visible_utc=now_iso,
-                            latency_ms=latency_ms,
-                            na_poll_count=poll_counts[fid]["na_poll_count"],
-                            total_poll_count=poll_counts[fid]["total_poll_count"],
-                        )
-                    else:
-                        poll_counts[fid]["na_poll_count"] += 1
-            finally:
-                ds.close()
+            # Process results
+            for fid, val, ts in results:
+                if val is None:
+                    continue  # step_idx was None
+                
+                poll_counts[fid]["total_poll_count"] += 1
+
+                if not np.isnan(val):
+                    now_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    ef = emitted_by_id[fid]
+                    producer_release_dt = datetime.fromisoformat(
+                        ef.producer_release_utc.replace("Z", "+00:00")
+                    )
+                    latency_ms = (now_dt - producer_release_dt).total_seconds() * 1000
+                    step_idx = hour_to_index.get(ef.forecast_hour)
+                    events_by_id[fid] = VisibilityEvent(
+                        file_id=fid,
+                        variable=ef.variable,
+                        forecast_hour=ef.forecast_hour,
+                        step_index=step_idx,
+                        producer_release_utc=ef.producer_release_utc,
+                        consumer_visible_utc=ts,
+                        latency_ms=latency_ms,
+                        na_poll_count=poll_counts[fid]["na_poll_count"],
+                        total_poll_count=poll_counts[fid]["total_poll_count"],
+                    )
+                else:
+                    poll_counts[fid]["na_poll_count"] += 1
 
         time.sleep(poll_interval_ms / 1000.0)
 
