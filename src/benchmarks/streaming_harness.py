@@ -1030,63 +1030,58 @@ def follow_manifests_and_measure(
             poll_counts.setdefault(fid, {"na_poll_count": 0, "total_poll_count": 0})
 
         if pending:
-            try:
-                ds = xr.open_zarr(silver_zarr_path, consolidated=True)
-            except KeyError as e:
-                if str(e).strip("\"") in {".zmetadata", "zarr.json"}:
-                    ds = xr.open_zarr(silver_zarr_path, consolidated=False)
-                else:
-                    raise
+            # Use zarr directly to bypass xarray's file caching
+            # This ensures fresh reads from cloud storage each poll
+            import zarr
+            
+            for fid in pending:
+                ef = emitted_by_id[fid]
+                step_idx = hour_to_index.get(ef.forecast_hour)
+                if step_idx is None:
+                    continue
 
-            try:
-                now_iso = utc_now_iso()
-                now_dt = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
-
-                for fid in pending:
-                    ef = emitted_by_id[fid]
-                    step_idx = hour_to_index.get(ef.forecast_hour)
-                    if step_idx is None:
-                        continue
-
-                    # Try to read the value, with retry for transient decompression errors
-                    # (can happen if we read a chunk while it's still being written/synced)
-                    try:
-                        val = (
-                            ds[ef.variable]
-                            .isel(step=step_idx, number=n_idx, latitude=lat_idx, longitude=lon_idx)
-                            .values
-                        )
-                        if isinstance(val, np.ndarray):
-                            val = val.item()
-                    except RuntimeError as e:
-                        if "blosc decompression" in str(e).lower():
-                            # Chunk is still being written, treat as NaN for this poll
-                            val = np.nan
-                        else:
-                            raise
-
-                    poll_counts[fid]["total_poll_count"] += 1
-
-                    if not np.isnan(val):
-                        producer_release_dt = datetime.fromisoformat(
-                            ef.producer_release_utc.replace("Z", "+00:00")
-                        )
-                        latency_ms = (now_dt - producer_release_dt).total_seconds() * 1000
-                        events_by_id[fid] = VisibilityEvent(
-                            file_id=fid,
-                            variable=ef.variable,
-                            forecast_hour=ef.forecast_hour,
-                            step_index=step_idx,
-                            producer_release_utc=ef.producer_release_utc,
-                            consumer_visible_utc=now_iso,
-                            latency_ms=latency_ms,
-                            na_poll_count=poll_counts[fid]["na_poll_count"],
-                            total_poll_count=poll_counts[fid]["total_poll_count"],
-                        )
+                # Try to read the value directly from zarr
+                # Opening fresh each time ensures no caching
+                try:
+                    store = zarr.open(silver_zarr_path, mode='r')
+                    arr = store[ef.variable]
+                    # Index: [step, number, latitude, longitude]
+                    val = arr[step_idx, n_idx, lat_idx, lon_idx]
+                    if isinstance(val, np.ndarray):
+                        val = val.item()
+                except Exception as e:
+                    if "blosc" in str(e).lower() or "decompression" in str(e).lower():
+                        # Chunk is still being written, treat as NaN for this poll
+                        val = np.nan
+                    elif "KeyError" in type(e).__name__ or "not found" in str(e).lower():
+                        # Variable not yet synced
+                        val = np.nan
                     else:
-                        poll_counts[fid]["na_poll_count"] += 1
-            finally:
-                ds.close()
+                        raise
+
+                poll_counts[fid]["total_poll_count"] += 1
+
+                if not np.isnan(val):
+                    # Capture timestamp per-file for accurate timing
+                    now_iso = utc_now_iso()
+                    now_dt = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+                    producer_release_dt = datetime.fromisoformat(
+                        ef.producer_release_utc.replace("Z", "+00:00")
+                    )
+                    latency_ms = (now_dt - producer_release_dt).total_seconds() * 1000
+                    events_by_id[fid] = VisibilityEvent(
+                        file_id=fid,
+                        variable=ef.variable,
+                        forecast_hour=ef.forecast_hour,
+                        step_index=step_idx,
+                        producer_release_utc=ef.producer_release_utc,
+                        consumer_visible_utc=now_iso,
+                        latency_ms=latency_ms,
+                        na_poll_count=poll_counts[fid]["na_poll_count"],
+                        total_poll_count=poll_counts[fid]["total_poll_count"],
+                    )
+                else:
+                    poll_counts[fid]["na_poll_count"] += 1
 
         time.sleep(poll_interval_ms / 1000.0)
 
