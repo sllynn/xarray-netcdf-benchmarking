@@ -16,6 +16,7 @@ benchmark_results_*.json
 
 # Data files (except example)
 data/*.nc
+data/*.grib
 !data/example/*.nc
 data/zarr*
 data/references*
@@ -27,8 +28,11 @@ data/references*
 *.swp
 *.swo
 *~
+litellm-config.yaml
 
 # OS
 .DS_Store
 Thumbs.db
 
+
+.databricks
