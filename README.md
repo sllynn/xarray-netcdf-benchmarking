@@ -130,7 +130,8 @@ Use the Databricks notebook `[notebooks/07_read_benchmarks.py](notebooks/07_read
 - Measure single-chunk vs multi-chunk slice reads
 - Measure scaling across multiple Zarr stores (forecast cycles)
 
-The notebook optionally generates a week of forecast-cycle Zarr stores under:
+The notebook optionally generates a week of forecast-cycle Zarr stores locally
+under `/local_disk0/zarr_fixtures` and syncs them to:
 `/Volumes/<catalog>/<schema>/<volume_name>/read_benchmarks/zarr_fixtures/`
 
 Results are written to:

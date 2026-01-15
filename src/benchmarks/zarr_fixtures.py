@@ -15,6 +15,7 @@ import shutil
 import numpy as np
 
 from src.zarr_init import initialize_zarr_store, generate_forecast_steps
+from src.cloud_sync import CloudSyncer
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,46 @@ def create_weekly_fixture(config: FixtureConfig) -> list[str]:
         prefix=config.prefix,
         overwrite=config.overwrite,
     )
+
+
+def generate_forecast_cycle_zarrs_local_and_sync(
+    local_base_path: str,
+    volume_target_path: str,
+    start_time: str | datetime,
+    num_days: int = 7,
+    cycle_hours: int = 6,
+    variables: Sequence[str] = ("t2m", "u10", "v10", "sp"),
+    ensemble_members: int = 50,
+    lat_size: int = 361,
+    lon_size: int = 720,
+    fill_value: float = 0.0,
+    consolidate_metadata: bool = True,
+    prefix: str = "forecast_",
+    overwrite: bool = False,
+    delete_destination: bool = False,
+) -> list[str]:
+    """Generate forecast-cycle Zarr stores locally and azcopy sync to a Volume path."""
+    local_paths = generate_forecast_cycle_zarrs(
+        base_path=local_base_path,
+        start_time=start_time,
+        num_days=num_days,
+        cycle_hours=cycle_hours,
+        variables=variables,
+        ensemble_members=ensemble_members,
+        lat_size=lat_size,
+        lon_size=lon_size,
+        fill_value=fill_value,
+        consolidate_metadata=consolidate_metadata,
+        prefix=prefix,
+        overwrite=overwrite,
+    )
+
+    syncer = CloudSyncer.from_volume_path(volume_target_path)
+    result = syncer.sync(local_base_path, delete_destination=delete_destination)
+    if not result.success:
+        raise RuntimeError(f"AzCopy sync failed: {result.error}")
+
+    return local_paths
 
 
 if __name__ == "__main__":

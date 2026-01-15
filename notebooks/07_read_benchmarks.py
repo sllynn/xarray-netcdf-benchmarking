@@ -25,7 +25,7 @@ from src.benchmarks.consumer_read import (
     save_slice_scaling_results,
     save_multi_store_results,
 )
-from src.benchmarks.zarr_fixtures import generate_forecast_cycle_zarrs
+from src.benchmarks.zarr_fixtures import generate_forecast_cycle_zarrs_local_and_sync
 
 # COMMAND ----------
 
@@ -36,6 +36,7 @@ VOLUME_NAME = "your_volume"
 
 BASE_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/read_benchmarks"
 ZARR_BASE_PATH = f"{BASE_PATH}/zarr_fixtures"
+LOCAL_FIXTURE_PATH = "/local_disk0/zarr_fixtures"
 RESULTS_PATH = f"{BASE_PATH}/results"
 
 CREATE_FIXTURES = False
@@ -62,17 +63,18 @@ METADATA_OPEN_ITERATIONS = 10
 
 # COMMAND ----------
 
-# Optional: generate weekly fixtures
+# Optional: generate weekly fixtures locally and sync to Volume
 if CREATE_FIXTURES:
     print("Creating forecast-cycle Zarr fixtures...")
-    generated = generate_forecast_cycle_zarrs(
-        base_path=ZARR_BASE_PATH,
+    generated = generate_forecast_cycle_zarrs_local_and_sync(
+        local_base_path=LOCAL_FIXTURE_PATH,
+        volume_target_path=ZARR_BASE_PATH,
         start_time=FIXTURE_START_TIME,
         num_days=FIXTURE_NUM_DAYS,
         cycle_hours=FIXTURE_CYCLE_HOURS,
         overwrite=FIXTURE_OVERWRITE,
     )
-    print(f"Created {len(generated)} stores")
+    print(f"Created {len(generated)} stores locally and synced to Volume")
 
 # COMMAND ----------
 
