@@ -122,6 +122,20 @@ python benchmark_loading_kerchunk.py --combined references/master.json -o result
 python benchmark_loading_kerchunk.py "references/*.json" -o results/
 ```
 
+#### Zarr Read Benchmarks (Databricks Volumes)
+
+Use the Databricks notebook `[notebooks/07_read_benchmarks.py](notebooks/07_read_benchmarks.py)` to:
+
+- Measure metadata open time (`xarray.open_zarr`)
+- Measure single-chunk vs multi-chunk slice reads
+- Measure scaling across multiple Zarr stores (forecast cycles)
+
+The notebook optionally generates a week of forecast-cycle Zarr stores under:
+`/Volumes/<catalog>/<schema>/<volume_name>/read_benchmarks/zarr_fixtures/`
+
+Results are written to:
+`/Volumes/<catalog>/<schema>/<volume_name>/read_benchmarks/results/`
+
 ## Environment Setup
 
 This project uses `uv` for fast, reproducible package management.
