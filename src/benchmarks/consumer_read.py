@@ -212,14 +212,14 @@ class MultiStoreScalingResult:
     zarr_paths: list  # list[str]
     variable: str
     consolidated: bool
-    access_mode: str = "loop"
-    concat_dim: Optional[str] = None
     step_count: int
     ensemble_count: int
     lat_count: int
     lon_count: int
     case_summaries: list  # list[MultiStoreCaseSummary]
     test_results: list  # list[MultiStoreTestResult]
+    access_mode: str = "loop"
+    concat_dim: Optional[str] = None
     timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
 
