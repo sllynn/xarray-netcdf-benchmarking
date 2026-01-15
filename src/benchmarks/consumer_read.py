@@ -212,6 +212,8 @@ class MultiStoreScalingResult:
     zarr_paths: list  # list[str]
     variable: str
     consolidated: bool
+    access_mode: str = "loop"
+    concat_dim: Optional[str] = None
     step_count: int
     ensemble_count: int
     lat_count: int
@@ -546,6 +548,8 @@ def benchmark_multi_store_scaling(
     tests_per_case: int = 3,
     consolidated: bool = True,
     align_to_chunks: bool = True,
+    use_mfdataset: bool = False,
+    concat_dim: str = "cycle",
 ) -> MultiStoreScalingResult:
     """Benchmark read scaling across multiple Zarr stores."""
     if not zarr_paths:
@@ -575,47 +579,88 @@ def benchmark_multi_store_scaling(
             test_id = f"multi_store_{count}_{i:03d}"
             datasets: list[xr.Dataset] = []
             try:
-                open_start = time.perf_counter()
-                for path in paths:
-                    datasets.append(xr.open_zarr(path, consolidated=consolidated))
-                open_time = (time.perf_counter() - open_start) * 1000
-
                 step_slice = _choose_slice(n_steps, step_size, chunk_shape[0], align_to_chunks)
                 ensemble_slice = _choose_slice(n_ensemble, ensemble_size, chunk_shape[1], align_to_chunks)
                 lat_slice = _choose_slice(n_lat, lat_size, chunk_shape[2], align_to_chunks)
                 lon_slice = _choose_slice(n_lon, lon_size, chunk_shape[3], align_to_chunks)
 
-                read_start = time.perf_counter()
-                data_arrays = [
-                    ds[variable].isel(
-                        step=step_slice,
-                        number=ensemble_slice,
-                        latitude=lat_slice,
-                        longitude=lon_slice,
+                if use_mfdataset:
+                    open_start = time.perf_counter()
+                    ds = xr.open_mfdataset(
+                        paths,
+                        engine='zarr',
+                        combine="nested",
+                        concat_dim=concat_dim,
+                        parallel=True,
                     )
-                    for ds in datasets
-                ]
-                read_time = (time.perf_counter() - read_start) * 1000
+                    open_time = (time.perf_counter() - open_start) * 1000
 
-                compute_start = time.perf_counter()
-                computed = [arr.compute() for arr in data_arrays]
-                compute_time = (time.perf_counter() - compute_start) * 1000
+                    read_start = time.perf_counter()
+                    data = ds[variable].isel(
+                        **{
+                            concat_dim: slice(0, len(paths)),
+                            'step': step_slice,
+                            'number': ensemble_slice,
+                            'latitude': lat_slice,
+                            'longitude': lon_slice,
+                        }
+                    )
+                    read_time = (time.perf_counter() - read_start) * 1000
 
-                for ds in datasets:
+                    compute_start = time.perf_counter()
+                    data_computed = data.compute()
+                    compute_time = (time.perf_counter() - compute_start) * 1000
                     ds.close()
 
-                data_size_mb = sum(arr.nbytes for arr in computed) / 1024 / 1024
-                total_time = open_time + read_time + compute_time
-                result = MultiStoreTestResult(
-                    test_id=test_id,
-                    num_stores=len(paths),
-                    open_time_ms=open_time,
-                    read_time_ms=read_time,
-                    compute_time_ms=compute_time,
-                    total_time_ms=total_time,
-                    data_size_mb=data_size_mb,
-                    success=True,
-                )
+                    data_size_mb = data_computed.nbytes / 1024 / 1024
+                    total_time = open_time + read_time + compute_time
+                    result = MultiStoreTestResult(
+                        test_id=test_id,
+                        num_stores=len(paths),
+                        open_time_ms=open_time,
+                        read_time_ms=read_time,
+                        compute_time_ms=compute_time,
+                        total_time_ms=total_time,
+                        data_size_mb=data_size_mb,
+                        success=True,
+                    )
+                else:
+                    open_start = time.perf_counter()
+                    for path in paths:
+                        datasets.append(xr.open_zarr(path, consolidated=consolidated))
+                    open_time = (time.perf_counter() - open_start) * 1000
+
+                    read_start = time.perf_counter()
+                    data_arrays = [
+                        ds[variable].isel(
+                            step=step_slice,
+                            number=ensemble_slice,
+                            latitude=lat_slice,
+                            longitude=lon_slice,
+                        )
+                        for ds in datasets
+                    ]
+                    read_time = (time.perf_counter() - read_start) * 1000
+
+                    compute_start = time.perf_counter()
+                    computed = [arr.compute() for arr in data_arrays]
+                    compute_time = (time.perf_counter() - compute_start) * 1000
+
+                    for ds in datasets:
+                        ds.close()
+
+                    data_size_mb = sum(arr.nbytes for arr in computed) / 1024 / 1024
+                    total_time = open_time + read_time + compute_time
+                    result = MultiStoreTestResult(
+                        test_id=test_id,
+                        num_stores=len(paths),
+                        open_time_ms=open_time,
+                        read_time_ms=read_time,
+                        compute_time_ms=compute_time,
+                        total_time_ms=total_time,
+                        data_size_mb=data_size_mb,
+                        success=True,
+                    )
             except Exception as e:
                 logger.error(f"Error in test {test_id}: {e}")
                 for ds in datasets:
@@ -655,6 +700,8 @@ def benchmark_multi_store_scaling(
         zarr_paths=list(zarr_paths),
         variable=variable,
         consolidated=consolidated,
+        access_mode="mfdataset" if use_mfdataset else "loop",
+        concat_dim=concat_dim if use_mfdataset else None,
         step_count=step_size,
         ensemble_count=ensemble_size,
         lat_count=lat_size,
@@ -1060,6 +1107,8 @@ def save_multi_store_results(result: MultiStoreScalingResult, output_path: str) 
         'zarr_paths': result.zarr_paths,
         'variable': result.variable,
         'consolidated': result.consolidated,
+        'access_mode': result.access_mode,
+        'concat_dim': result.concat_dim,
         'step_count': result.step_count,
         'ensemble_count': result.ensemble_count,
         'lat_count': result.lat_count,

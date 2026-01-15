@@ -57,6 +57,8 @@ MULTI_STORE_STEP_COUNT = 1
 MULTI_STORE_ENSEMBLE_COUNT = 50
 MULTI_STORE_SPATIAL_SIZE = (361, 720)
 MULTI_STORE_TESTS_PER_CASE = 2
+MULTI_STORE_USE_MFDATASET = True
+MULTI_STORE_CONCAT_DIM = "cycle"
 
 # Metadata open config
 METADATA_OPEN_ITERATIONS = 10
@@ -157,6 +159,8 @@ multi_store_result = benchmark_multi_store_scaling(
     tests_per_case=MULTI_STORE_TESTS_PER_CASE,
     consolidated=True,
     align_to_chunks=True,
+    use_mfdataset=MULTI_STORE_USE_MFDATASET,
+    concat_dim=MULTI_STORE_CONCAT_DIM,
 )
 
 multi_store_json = f"{RESULTS_PATH}/multi_store_scaling_{timestamp}.json"
