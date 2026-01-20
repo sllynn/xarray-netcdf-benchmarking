@@ -278,24 +278,6 @@ print(f"  Status: {manager.status}")
 
 # COMMAND ----------
 
-from src.region_writer import cleanup_staging_dir, DEFAULT_STAGING_DIR
-
-# Clear any leftover files from previous runs
-cleanup_staging_dir(DEFAULT_STAGING_DIR)
-print(f"✓ Cleared staging directory: {DEFAULT_STAGING_DIR}")
-
-# Create pipeline manager
-manager = PipelineManager(spark, config)
-
-# Start the pipeline
-manager.start()
-  
-print(f"✓ Pipeline started")
-print(f"  Query ID: {manager.query.id}")
-print(f"  Status: {manager.status}")
-
-# COMMAND ----------
-
 sq = spark.streams.active[0]  # choose the stream you want
 for p in sq.recentProgress:
     metrics = p["sources"][0]["metrics"] if p["sources"] else {}

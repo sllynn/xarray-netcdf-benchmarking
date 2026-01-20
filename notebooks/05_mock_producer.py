@@ -71,6 +71,8 @@ print(f"Mode: {MODE}")
 import itertools
 import shutil
 import time
+
+from datetime import datetime
 from pathlib import Path
 
 from src.benchmarks.streaming_harness import (
@@ -102,6 +104,14 @@ prepared = prepare_all_gribs_locally(
 
 gen_elapsed = time.time() - gen_start
 print(f"✓ Generated {len(prepared)} GRIBs in {gen_elapsed:.1f}s ({len(prepared)/gen_elapsed:.1f} files/sec)")
+
+# COMMAND ----------
+
+LOCAL_STAGING_DIR
+
+# COMMAND ----------
+
+# MAGIC %sh ls -l '/local_disk0/grib_staging' | wc -l
 
 # COMMAND ----------
 
@@ -139,6 +149,7 @@ print(f"✓ Copied {len(staged)} GRIBs in {stage_elapsed:.1f}s ({len(staged)/sta
 # COMMAND ----------
 
 print(f"Releasing {len(staged)} GRIBs in {MODE} mode...")
+print(f"Release start time (ISO): {datetime.now().isoformat()}")
 if MODE == "steady":
     print(f"  Expected duration: {len(staged) * STEADY_INTERVAL_S:.0f}s")
 

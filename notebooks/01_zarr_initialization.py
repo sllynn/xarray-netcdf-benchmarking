@@ -55,8 +55,6 @@ LON_SIZE = 720
 import sys
 import time
 
-sys.path.insert(0, '/Workspace/Repos/your_user/raster-benchmarking')
-
 from datetime import datetime, timezone
 from src.zarr_init import (
     initialize_zarr_store,

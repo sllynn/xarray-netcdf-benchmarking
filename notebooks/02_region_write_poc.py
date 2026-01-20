@@ -44,13 +44,16 @@ MAX_WORKERS = 32  # Match cluster core count
 
 # COMMAND ----------
 
+print(GRIB_LANDING_ZONE)
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Import Libraries
 
 # COMMAND ----------
 
 import sys
-# sys.path.insert(0, '/Workspace/Repos/your_user/raster-benchmarking')
 
 import time
 from pathlib import Path
@@ -94,6 +97,14 @@ for hour in sample_hours:
 # COMMAND ----------
 
 # MAGIC %sh mkdir -p $GRIB_LANDING_ZONE
+
+# COMMAND ----------
+
+# MAGIC %sh python ../generate_mock_data.py \
+# MAGIC   $GRIB_LANDING_ZONE \
+# MAGIC   --format grib \
+# MAGIC   --variables t2m u10 v10 sp \
+# MAGIC   --members 50
 
 # COMMAND ----------
 
