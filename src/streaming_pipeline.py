@@ -433,8 +433,8 @@ def create_streaming_pipeline(
     
     # Use file notification mode if enabled (recommended for low latency)
     if config.use_file_notification:
-        reader_options['cloudFiles.useNotifications'] = 'true'
-        reader_options['cloudFiles.useManagedFileEvents'] = 'false'
+        # reader_options['cloudFiles.useNotifications'] = 'true'
+        reader_options['cloudFiles.useManagedFileEvents'] = 'true'
     
     # Create the streaming DataFrame
     # Watch for manifest JSON files - these trigger file notifications reliably.
