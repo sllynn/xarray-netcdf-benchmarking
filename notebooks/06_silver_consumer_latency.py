@@ -39,7 +39,8 @@ from src.benchmarks.streaming_harness import (
 
 CATALOG = "stuart"
 SCHEMA = "lseg"
-VOLUME_NAME = "netcdf"
+# VOLUME_NAME = "netcdf"
+VOLUME_NAME = "netcdf-grs"
 
 LANDING_ZONE = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/landing/"
 SILVER_ZARR = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/silver/forecast.zarr"

@@ -11,6 +11,18 @@
 
 # COMMAND ----------
 
+# MAGIC %pip install uv
+
+# COMMAND ----------
+
+# MAGIC %sh uv pip install -r ../requirements.lock
+
+# COMMAND ----------
+
+# MAGIC %restart_python
+
+# COMMAND ----------
+
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,16 +42,16 @@ from src.benchmarks.zarr_fixtures import generate_forecast_cycle_zarrs_local_and
 # COMMAND ----------
 
 # Configuration
-CATALOG = "your_catalog"
-SCHEMA = "your_schema"
-VOLUME_NAME = "your_volume"
+CATALOG = "stuart"
+SCHEMA = "lseg"
+VOLUME_NAME = "netcdf"
 
 BASE_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/read_benchmarks"
 ZARR_BASE_PATH = f"{BASE_PATH}/zarr_fixtures"
 LOCAL_FIXTURE_PATH = "/local_disk0/zarr_fixtures"
 RESULTS_PATH = f"{BASE_PATH}/results"
 
-CREATE_FIXTURES = False
+CREATE_FIXTURES = True
 FIXTURE_START_TIME = "2025-12-29T00:00:00"
 FIXTURE_NUM_DAYS = 7
 FIXTURE_CYCLE_HOURS = 6
@@ -118,6 +130,18 @@ print(f"Saved: {metadata_csv}")
 
 # COMMAND ----------
 
+(
+    spark.read
+    .format("csv")
+    .options(**{
+        "header": "true",
+        "inferSchema": "true"
+    })
+    .load(f"{RESULTS_PATH}/metadata_open_*.csv")
+).display()
+
+# COMMAND ----------
+
 # Benchmark 2: slice scaling (single-chunk vs multi-chunk grids)
 print("=" * 60)
 print("BENCHMARK 2: Slice Scaling")
@@ -141,6 +165,18 @@ slice_summary_csv = f"{RESULTS_PATH}/slice_scaling_summary_{timestamp}.csv"
 slice_summary_df.to_csv(slice_summary_csv, index=False)
 print(f"Saved: {slice_json}")
 print(f"Saved: {slice_summary_csv}")
+
+# COMMAND ----------
+
+(
+    spark.read
+    .format("csv")
+    .options(**{
+        "header": "true",
+        "inferSchema": "true"
+    })
+    .load(f"{RESULTS_PATH}/slice_scaling_summary_*.csv")
+).display()
 
 # COMMAND ----------
 
@@ -171,6 +207,18 @@ multi_store_summary_csv = f"{RESULTS_PATH}/multi_store_scaling_summary_{timestam
 multi_store_summary_df.to_csv(multi_store_summary_csv, index=False)
 print(f"Saved: {multi_store_json}")
 print(f"Saved: {multi_store_summary_csv}")
+
+# COMMAND ----------
+
+(
+    spark.read
+    .format("csv")
+    .options(**{
+        "header": "true",
+        "inferSchema": "true"
+    })
+    .load(f"{RESULTS_PATH}/multi_store_scaling_summary_*.csv")
+).display()
 
 # COMMAND ----------
 

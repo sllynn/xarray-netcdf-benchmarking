@@ -30,7 +30,8 @@
 # Configuration
 CATALOG = "stuart"
 SCHEMA = "lseg"
-VOLUME_NAME = "netcdf"
+# VOLUME_NAME = "netcdf"
+VOLUME_NAME = "netcdf-grs"
 
 # Paths
 LANDING_ZONE = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/landing/"
@@ -41,7 +42,7 @@ CLOUD_DESTINATION = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/silver/forecast.
 CHECKPOINT_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/checkpoints/grib_pipeline"
 
 # Processing parameters
-MAX_FILES_PER_BATCH = 4
+MAX_FILES_PER_BATCH = 8
 NUM_WORKERS = 32  # Direct zarr writes don't have lock contention
 TRIGGER_INTERVAL = "0 seconds"  # Process immediately (no buffering)
 
@@ -170,9 +171,11 @@ import shutil
 # Clear checkpoint to reprocess all files
 try:
     dbutils.fs.rm(CHECKPOINT_PATH, recurse=True)
-    dbutils.fs.rm(LANDING_ZONE, recurse=True)
-    dbutils.fs.rm(CLOUD_DESTINATION, recurse=True)
     print(f"✓ Cleared checkpoint: {CHECKPOINT_PATH}")
+    dbutils.fs.rm(LANDING_ZONE, recurse=True)
+    print(f"✓ Cleared landing zone: {LANDING_ZONE}")
+    dbutils.fs.rm(CLOUD_DESTINATION, recurse=True)
+    print(f"✓ Cleared cloud destination: {CLOUD_DESTINATION}")
 except Exception as e:
     # Checkpoint may not exist yet on first run
     print(f"Note: Could not clear checkpoint (may not exist yet): {e}")
@@ -239,6 +242,8 @@ config = PipelineConfig(
     sync_after_each_batch=True,  # Sync to cloud after each batch
     staging_method=STAGING_METHOD,  # 'azcopy' or 'azure_sdk'
     processing_mode=PROCESSING_MODE,  # 'batch_stage' or 'stream'
+    notification_mode="legacy",
+    legacy_secrets_scope="lseg"
 )
 
 print("Pipeline Configuration:")
@@ -324,10 +329,6 @@ while time.time() - start_time < monitor_duration:
 
 print("Monitoring complete")
 print(f"\nFinal metrics: {manager.get_metrics()}")
-
-# COMMAND ----------
-
-
 
 # COMMAND ----------
 

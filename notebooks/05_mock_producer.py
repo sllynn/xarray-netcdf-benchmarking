@@ -34,7 +34,8 @@
 
 CATALOG = "stuart"
 SCHEMA = "lseg"
-VOLUME_NAME = "netcdf"
+# VOLUME_NAME = "netcdf"
+VOLUME_NAME = "netcdf-grs"
 
 LANDING_ZONE = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/landing/"
 
@@ -104,10 +105,6 @@ prepared = prepare_all_gribs_locally(
 
 gen_elapsed = time.time() - gen_start
 print(f"✓ Generated {len(prepared)} GRIBs in {gen_elapsed:.1f}s ({len(prepared)/gen_elapsed:.1f} files/sec)")
-
-# COMMAND ----------
-
-LOCAL_STAGING_DIR
 
 # COMMAND ----------
 
