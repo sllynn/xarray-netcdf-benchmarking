@@ -39,7 +39,8 @@ from src.benchmarks.streaming_harness import (
 
 CATALOG = "stuart"
 SCHEMA = "lseg"
-VOLUME_NAME = "netcdf"
+# VOLUME_NAME = "netcdf"
+VOLUME_NAME = "netcdf-grs"
 
 LANDING_ZONE = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/landing/"
 SILVER_ZARR = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}/silver/forecast.zarr"
@@ -126,3 +127,9 @@ if events:
     print("Backlog proxy:")
     print(f"  first_visible_utc: {consumer_times[0]}")
     print(f"  last_visible_utc:  {consumer_times[-1]}")
+
+# COMMAND ----------
+
+with open(output_path, "r") as fh:
+    for l in fh.readlines():
+        print(l, end="")

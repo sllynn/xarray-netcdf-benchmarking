@@ -46,6 +46,34 @@ class PipelineConfig:
         Spark trigger interval (default: '0 seconds' for immediate).
     use_file_notification : bool
         Use file notification mode for AutoLoader (default: True).
+    notification_mode : str
+        Which file notification mode to use: 'managed' or 'legacy'.
+        
+        'managed': Uses cloudFiles.useManagedFileEvents (recommended, simpler setup).
+            Databricks manages the file event infrastructure automatically.
+        
+        'legacy': Uses cloudFiles.useNotifications with a service principal.
+            Requires Azure credentials to create Event Grid subscriptions and
+            Queue Storage queues. May have lower latency in some scenarios.
+            
+            When using 'legacy' mode, set `legacy_secrets_scope` to the Databricks
+            secret scope containing the required credentials.
+        
+        Default: 'managed'.
+    legacy_secrets_scope : str, optional
+        Databricks secret scope containing Azure credentials for legacy mode.
+        Required keys in the scope:
+        - clientId: Service principal client ID
+        - clientSecret: Service principal client secret
+        - tenantId: Azure AD tenant ID
+        - subscriptionId: Azure subscription ID
+        - resourceGroup: Resource group containing the storage account
+        - connectionString (optional): Azure Storage connection string
+        
+        If connectionString is not provided, the service principal must have
+        the 'Storage Queue Data Contributor' role on the storage account.
+        
+        Default: None (required if notification_mode='legacy').
     include_existing_files : bool
         Whether Auto Loader should process files already present in the landing
         zone when the stream starts.
@@ -84,6 +112,8 @@ class PipelineConfig:
     num_workers: int = 32
     trigger_interval: str = '0 seconds'
     use_file_notification: bool = True
+    notification_mode: str = 'managed'  # 'managed' or 'legacy'
+    legacy_secrets_scope: Optional[str] = None
     include_existing_files: bool = True
     ignore_missing_files: bool = True
     sync_after_each_batch: bool = True
@@ -173,6 +203,7 @@ def create_streaming_pipeline(
     logger.info(f"  Cloud destination: {config.cloud_destination}")
     logger.info(f"  Max files per batch: {config.max_files_per_batch}")
     logger.info(f"  Num workers: {config.num_workers}")
+    logger.info(f"  File notification: {config.use_file_notification} (mode={config.notification_mode})")
     
     def process_batch(batch_df, batch_id):
         """Process a micro-batch of GRIB files.
@@ -433,8 +464,62 @@ def create_streaming_pipeline(
     
     # Use file notification mode if enabled (recommended for low latency)
     if config.use_file_notification:
-        # reader_options['cloudFiles.useNotifications'] = 'true'
-        reader_options['cloudFiles.useManagedFileEvents'] = 'true'
+        if config.notification_mode == 'legacy':
+            # Legacy file notification mode: Auto Loader creates its own Event Grid
+            # subscription and Queue Storage queue using the provided service principal.
+            # This requires Azure credentials stored in a Databricks secret scope.
+            #
+            # See: https://learn.microsoft.com/en-us/azure/databricks/ingestion/cloud-object-storage/auto-loader/file-notification-mode#-manage-file-notification-queues-for-each-auto-loader-stream-separately-legacy
+            
+            if not config.legacy_secrets_scope:
+                raise ValueError(
+                    "legacy_secrets_scope is required when notification_mode='legacy'. "
+                    "Set it to the Databricks secret scope containing: "
+                    "clientId, clientSecret, tenantId, subscriptionId, resourceGroup"
+                )
+            
+            # Import dbutils for secret access (available in Databricks runtime)
+            try:
+                from pyspark.dbutils import DBUtils
+                dbutils = DBUtils(spark)
+            except ImportError:
+                # Fallback for some Databricks environments where dbutils is global
+                import builtins
+                dbutils = getattr(builtins, 'dbutils', None)
+                if dbutils is None:
+                    raise RuntimeError(
+                        "Could not access dbutils. Legacy notification mode requires "
+                        "Databricks runtime with access to secret scopes."
+                    )
+            
+            scope = config.legacy_secrets_scope
+            
+            # Required credentials for legacy file notification mode
+            reader_options['cloudFiles.useNotifications'] = 'true'
+            reader_options['cloudFiles.clientId'] = dbutils.secrets.get(scope, 'clientId')
+            reader_options['cloudFiles.clientSecret'] = dbutils.secrets.get(scope, 'clientSecret')
+            reader_options['cloudFiles.tenantId'] = dbutils.secrets.get(scope, 'tenantId')
+            reader_options['cloudFiles.subscriptionId'] = dbutils.secrets.get(scope, 'subscriptionId')
+            reader_options['cloudFiles.resourceGroup'] = dbutils.secrets.get(scope, 'resourceGroup')
+            
+            # Connection string is optional - if provided, it's used for queue access
+            # If not provided, service principal needs 'Storage Queue Data Contributor' role
+            try:
+                connection_string = dbutils.secrets.get(scope, 'connectionString')
+                if connection_string:
+                    reader_options['cloudFiles.connectionString'] = connection_string
+            except Exception:
+                # connectionString not in scope - that's fine, will use service principal
+                logger.info(
+                    "No connectionString in secret scope; service principal will be used "
+                    "for queue access (requires 'Storage Queue Data Contributor' role)"
+                )
+            
+            logger.info(f"Using legacy file notification mode with secrets from scope '{scope}'")
+        else:
+            # Managed file events mode (default): Databricks manages everything
+            reader_options['cloudFiles.useManagedFileEvents'] = 'true'
+            logger.info("Using managed file events mode")
     
     # Create the streaming DataFrame
     # Watch for manifest JSON files - these trigger file notifications reliably.
@@ -672,7 +757,7 @@ if __name__ == "__main__":
     print("This module requires a Spark session to run.")
     print("See notebooks/03_streaming_pipeline.py for usage examples.")
     print()
-    print("Example configuration:")
+    print("Example configuration (managed file events - default):")
     print()
     
     config = PipelineConfig(
@@ -682,6 +767,7 @@ if __name__ == "__main__":
         checkpoint_path='/Volumes/catalog/schema/checkpoints/grib_pipeline',
         max_files_per_batch=32,
         num_workers=32,
+        notification_mode='managed',  # Default: Databricks manages file events
     )
     
     print(f"  landing_zone: {config.landing_zone}")
@@ -690,4 +776,31 @@ if __name__ == "__main__":
     print(f"  checkpoint_path: {config.checkpoint_path}")
     print(f"  max_files_per_batch: {config.max_files_per_batch}")
     print(f"  num_workers: {config.num_workers}")
+    print(f"  notification_mode: {config.notification_mode}")
+    
+    print()
+    print("Example configuration (legacy file notification mode):")
+    print()
+    
+    legacy_config = PipelineConfig(
+        landing_zone='/Volumes/catalog/schema/bronze/grib/',
+        zarr_store_path='/local_disk0/forecast.zarr',
+        cloud_destination='/Volumes/catalog/schema/silver/',
+        checkpoint_path='/Volumes/catalog/schema/checkpoints/grib_pipeline',
+        max_files_per_batch=32,
+        num_workers=32,
+        notification_mode='legacy',
+        legacy_secrets_scope='lseg',  # Databricks secret scope with Azure credentials
+    )
+    
+    print(f"  notification_mode: {legacy_config.notification_mode}")
+    print(f"  legacy_secrets_scope: {legacy_config.legacy_secrets_scope}")
+    print()
+    print("Required secrets in the scope:")
+    print("  - clientId: Service principal client ID")
+    print("  - clientSecret: Service principal client secret")
+    print("  - tenantId: Azure AD tenant ID")
+    print("  - subscriptionId: Azure subscription ID")
+    print("  - resourceGroup: Resource group containing the storage account")
+    print("  - connectionString (optional): Azure Storage connection string")
 

@@ -6,22 +6,22 @@ flowchart LR
         INIT["GRIB write<br/>to cloud"]
     end
 
-    subgraph A["A) Notification ⏱️ ~30-40s"]
+    subgraph A["A) Notification ⏱️ ~4-5s"]
         style A fill:#FFE4B5
         A1["UC event"] --> A2["Delivery"]
     end
 
-    subgraph B["B) Batching ⏱️ 0-10s"]
+    subgraph B["B) Batching ⏱️ 0-5s"]
         style B fill:#E6E6FA
         B1["Wait for<br/>batch size"]
     end
 
-    subgraph C["C) Micro-batch ⏱️ 8-12s"]
+    subgraph C["C) Micro-batch ⏱️ 3-5s"]
         style C fill:#98FB98
         subgraph C2["Parallel (ThreadPool)"]
             direction TB
             subgraph GRIB1["GRIB 1"]
-                C1a["Copy<br/>~3s"] --> C2a["Read<br/>~200ms"] --> C3a["Write<br/>~150ms"]
+                C1a["Copy<br/>1-2s"] --> C2a["Read<br/>100-250ms"] --> C3a["Write<br/>100-200ms"]
             end
             subgraph GRIB2["GRIB 2"]
                 C1b["Copy"] --> C2b["Read"] --> C3b["Write"]
@@ -32,10 +32,10 @@ flowchart LR
            
         end
         
-        C3a & C3b & C3c --> C4["azcopy sync<br/>⏱️ ~5s"]
+        C3a & C3b & C3c --> C4["azcopy sync<br/>⏱️ ~2s"]
     end
 
-    subgraph D["D) Consumer ⏱️ 3-5s"]
+    subgraph D["D) Consumer ⏱️ 2-3s"]
         style D fill:#87CEEB
         D1["Poll"] --> D2["Visible ✓"]
     end
